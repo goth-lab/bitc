@@ -436,7 +436,32 @@ func (p *Parser) parseCallExpr(callee Expr, tArgs []string) *CallExpr {
 	return &CallExpr{Line: line, Callee: callee, TypeArgs: tArgs, Args: args}
 }
 
-// isGenericCallAhead checks whether '<' begins generic type arguments before '('.
+// isGenericCallAhead checks whether '<' begins generic type arguments followed by '>('.
+// It scans ahead without mutating parser state so comparison operators like 'x < 128'
+// are never misclassified as generic function calls.
 func (p *Parser) isGenericCallAhead() bool {
-	return p.peekTok.Type == TOK_NUMBER || p.peekTok.Type == TOK_IDENT
+	if p.peekTok.Type != TOK_NUMBER && p.peekTok.Type != TOK_IDENT {
+		return false
+	}
+	// Save lexer state to perform an exact non-destructive lookahead.
+	savedPos := p.lexer.pos
+	savedLine := p.lexer.line
+	defer func() {
+		p.lexer.pos = savedPos
+		p.lexer.line = savedLine
+	}()
+
+	// p.peekTok is already the first token after '<'; scan until matching '>' or stop.
+	tok := p.lexer.NextToken()
+	for tok.Type != TOK_EOF {
+		if tok.Type == TOK_GT {
+			afterGt := p.lexer.NextToken()
+			return afterGt.Type == TOK_LPAREN
+		}
+		if tok.Type != TOK_COMMA && tok.Type != TOK_NUMBER && tok.Type != TOK_IDENT {
+			return false
+		}
+		tok = p.lexer.NextToken()
+	}
+	return false
 }

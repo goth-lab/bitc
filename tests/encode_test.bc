@@ -1,0 +1,17 @@
+import "test.bc";
+import "../std/encode.bc";
+
+test "thermometer64 boundary and locality properties" {
+    v0: bvec<64> = thermometer64(0);
+    v10: bvec<64> = thermometer64(10);
+    v12: bvec<64> = thermometer64(12);
+    v99: bvec<64> = thermometer64(99);
+
+    assert_popcount<64>(v0, 0, 1);
+    assert_popcount<64>(v10, 10, 2);
+    assert_popcount<64>(v99, 64, 3);
+
+    // Nearby values (10 and 12) must match in 62 out of 64 bit positions.
+    sim: int = count(match(v10, v12));
+    assert_eq(sim, 62, 4);
+}
