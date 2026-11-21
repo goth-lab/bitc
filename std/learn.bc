@@ -1,11 +1,33 @@
-// @file std/learn.bc
-// @brief Стандартная библиотека алгоритмов дискретного обучения BIT-C.
+import "test.bc";
 
-// Стохастическая коррекция весов без вещественной математики
+// MARK: - Discrete On-Device Weight Update Primitives
+
+/// @brief Performs stochastic bitwise weight nudging without floating-point math.
+/// @tparam N Bit-width of the weight and input hypervectors.
+/// @param weight Pointer to the target synaptic weight vector to update in-place.
+/// @param input Input feature hypervector.
+/// @param wantFire Target firing state (1 to reinforce agreement, 0 to push apart).
+/// @param mask Sparse stochastic learning-rate mask controlling which bits flip.
 fn nudge<N>(weight: *bvec<N>, input: bvec<N>, wantFire: bit, mask: bvec<N>) {
     if wantFire == 1 {
         *weight = *weight ^ ((*weight ^ input) & mask);
     } else {
         *weight = *weight ^ (~(*weight ^ input) & mask);
     }
+}
+
+// MARK: - Unit Tests for std/learn
+
+test "nudge reinforces and weakens agreement on bvec<64>" {
+    w: bvec<64> = 0x0000000000000000;
+    inp: bvec<64> = 0x00000000000000FF;
+    full_mask: bvec<64> = 0xFFFFFFFFFFFFFFFF;
+
+    // Reinforce agreement: w must adopt inp bits under full_mask.
+    nudge<64>(&w, inp, 1, full_mask);
+    assert_eq(count(match(w, inp)), 64, 1);
+
+    // Push apart: w must invert away from inp under full_mask.
+    nudge<64>(&w, inp, 0, full_mask);
+    assert_eq(count(match(w, inp)), 0, 2);
 }

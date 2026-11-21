@@ -1,17 +1,57 @@
-// @file std/sys.bc
-// @brief Системный модуль стандартной библиотеки BIT-C v1.0.
-// @details Предоставляет генератор разреженных масок, таймер в наносекундах
-// и бинарную сериализацию памяти нейросети на диск.
+import "test.bc";
 
-// Внешние системные примитивы C-рантайма
+// MARK: - External C Runtime System Primitives
+
+/// @brief Generates a sparse 64-bit random mask (~12.5% set bits) via Xorshift64*.
+/// @return 64-bit sparse hypervector mask.
 extern fn rand_mask() -> bvec<64>;
+
+/// @brief Reads the monotonic system clock in nanoseconds.
+/// @return Elapsed monotonic time in nanoseconds.
 extern fn now_ns() -> int;
+
+/// @brief Persists raw binary memory to a numbered weight slot file on disk.
+/// @param slot Numeric slot identifier (creates weights_slot_<slot>.bin).
+/// @param ptr Pointer to the source memory buffer.
+/// @param bytes Number of bytes to write.
 extern fn save_raw(slot: int, ptr: *void, bytes: int);
+
+/// @brief Loads raw binary memory from a numbered weight slot file on disk.
+/// @param slot Numeric slot identifier (reads weights_slot_<slot>.bin).
+/// @param ptr Pointer to the destination memory buffer.
+/// @param bytes Number of bytes to read.
 extern fn load_raw(slot: int, ptr: *void, bytes: int);
 
-// Генератор разреженной маски для 256-битных векторов (написан на BIT-C!)
+// MARK: - Wide Hypervector Random Generators
+
+/// @brief Generates a sparse 256-bit random mask by populating each bit lane.
+/// @return 256-bit sparse hypervector mask.
+/// @note Uses bit-level indexing unlocked in BIT-C v1.1 codegen.
 fn rand_mask256() -> bvec<256> {
     res: bvec<256>;
-    // В следующих версиях можно заполнять по словам, пока возвращаем базовый вектор
+    for w in 0..4 {
+        chunk: bvec<64> = rand_mask();
+        base: int = w * 64;
+        for b in 0..64 {
+            idx: int = base + b;
+            res[idx] = chunk[b];
+        }
+    }
     return res;
+}
+
+// MARK: - Unit Tests for std/sys
+
+test "now_ns monotonic clock increases or stays non-negative" {
+    t1: int = now_ns();
+    t2: int = now_ns();
+    assert_true(t1 > 0, 1);
+    assert_true(t2 >= t1, 2);
+}
+
+test "rand_mask256 produces non-zero sparse hypervector" {
+    m: bvec<256> = rand_mask256();
+    ones: int = count(m);
+    assert_true(ones > 0, 10);
+    assert_true(ones < 128, 11);
 }

@@ -1,11 +1,17 @@
-// @file std/encode.bc
-// @brief Стандартная библиотека кодирования сигналов и пикселей в битовые векторы.
+import "test.bc";
 
-// Преобразует аналоговое число val (0..64) в 64-битный термометрический код.
-// Похожие числа имеют почти одинаковые битовые маски (идеально для match).
+// MARK: - Scalar & Sensor Hyperdimensional Encoders
+
+/// @brief Encodes an integer scalar (0..64) into a 64-bit thermometer code.
+/// @param val Input scalar value (clamped to the [0, 64] range).
+/// @return 64-bit hypervector with the lowest `val` bits set to 1.
+/// @note Preserves locality: nearby numbers share high XNOR match() popcount.
 fn thermometer64(val: int) -> bvec<64> {
     out: bvec<64> = 0;
     limit: int = val;
+    if limit < 0 {
+        limit = 0;
+    }
     if limit > 64 {
         limit = 64;
     }
@@ -13,4 +19,21 @@ fn thermometer64(val: int) -> bvec<64> {
         out[i] = 1;
     }
     return out;
+}
+
+// MARK: - Unit Tests for std/encode
+
+test "thermometer64 boundary and locality properties" {
+    v0: bvec<64> = thermometer64(0);
+    v10: bvec<64> = thermometer64(10);
+    v12: bvec<64> = thermometer64(12);
+    v99: bvec<64> = thermometer64(99);
+
+    assert_popcount<64>(v0, 0, 1);
+    assert_popcount<64>(v10, 10, 2);
+    assert_popcount<64>(v99, 64, 3);
+
+    // Nearby values (10 and 12) must match in 62 out of 64 bit positions.
+    sim: int = count(match(v10, v12));
+    assert_eq(sim, 62, 4);
 }
