@@ -423,6 +423,8 @@ func (g *CodeGenerator) mapCType(t TypeExpr) string {
 		return "uint8_t" + ptr
 	case "void":
 		return "void" + ptr
+	case "i8":
+		return "int8_t" + ptr
 	default:
 		return t.Name + ptr
 	}

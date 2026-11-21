@@ -1,0 +1,103 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/tensor.bc
+// Description: Zero-copy tensor views, fixed-point i8 quantization, and HDC binarization.
+
+// MARK: - Zero-Copy Tensor Views
+
+/// @brief Non-owning 1D tensor view over contiguous memory.
+/// @tparam T Element type (e.g., i8, i16, u8, int).
+struct TensorView1D<T> {
+    data: *T;
+    len: int;
+}
+
+/// @brief Non-owning 2D matrix view supporting strided zero-copy row slicing.
+/// @tparam T Element type (e.g., u8 for grayscale pixels, i8 for weights).
+struct TensorView2D<T> {
+    data: *T;
+    rows: int;
+    cols: int;
+    stride: int;
+}
+
+/// @brief Returns a zero-copy sub-slice of a 1D tensor view [start .. start + count).
+/// @param self Pointer to the source TensorView1D.
+/// @param start Starting element offset.
+/// @param count Number of elements in the resulting view.
+/// @return Sliced TensorView1D (empty view with len=0 if bounds are invalid).
+fn (self: *TensorView1D<T>) slice(start: int, count: int) -> TensorView1D<T> {
+    out: TensorView1D<T>;
+    if start < 0 {
+        out.data = 0;
+        out.len = 0;
+        return out;
+    }
+    if count <= 0 {
+        out.data = 0;
+        out.len = 0;
+        return out;
+    }
+    if start + count > self.len {
+        out.data = 0;
+        out.len = 0;
+        return out;
+    }
+    out.data = &self.data[start];
+    out.len = count;
+    return out;
+}
+
+/// @brief Reads an element at (row, col) using the view's row stride.
+/// @param self Pointer to the TensorView2D instance.
+/// @param row Zero-based row index.
+/// @param col Zero-based column index.
+/// @return Element value at (row, col).
+fn (self: *TensorView2D<T>) at(row: int, col: int) -> T {
+    idx: int = row * self.stride + col;
+    return self.data[idx];
+}
+
+// MARK: - Fixed-Point Quantization and Hypervector Binarization
+
+/// @brief Quantizes signed 32-bit integers into clamped 8-bit integers (-128..127)
+///        using Q16.16 fixed-point scaling without floating-point hardware.
+/// @param src Source 1D view of i32 activations.
+/// @param dst Destination 1D view of quantized i8 values.
+/// @param inv_scale_q16 Reciprocal scale factor multiplied by 65536 (1 << 16).
+/// @return Number of quantized elements, or -1 if lengths mismatch.
+fn quantize_i32_to_i8(src: TensorView1D<i32>, dst: TensorView1D<i8>, inv_scale_q16: int) -> int {
+    if src.len != dst.len {
+        return -1;
+    }
+    for i in 0..src.len {
+        raw: int = (src.data[i] * inv_scale_q16) >> 16;
+        if raw > 127 {
+            raw = 127;
+        }
+        if raw < -128 {
+            raw = -128;
+        }
+        dst.data[i] = raw;
+    }
+    return src.len;
+}
+
+/// @brief Binarizes up to 64 i8 elements into a 64-bit hypervector using a threshold.
+/// @param src Input 1D tensor view (reads min(src.len, 64) elements).
+/// @param threshold Values strictly greater than threshold become 1-bits.
+/// @return 64-bit binary hypervector ready for XNOR match() and count().
+fn binarize_i8_to_bvec64(src: TensorView1D<i8>, threshold: int) -> bvec<64> {
+    out: bvec<64> = 0;
+    limit: int = src.len;
+    if limit > 64 {
+        limit = 64;
+    }
+    for i in 0..limit {
+        if src.data[i] > threshold {
+            out[i] = 1;
+        }
+    }
+    return out;
+}
