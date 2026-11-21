@@ -1,56 +1,51 @@
-# BIT-C Compiler — Architecture & Context Snapshot (v1.0 -> v1.1)
+# BIT-C Compiler — Architecture & Context Snapshot (v1.1)
 
-* **Язык реализации компилятора:** Go (`main.go`, `lexer.go`, `ast.go`, `parser.go`, `sema.go`, `codegen.go`).
-* **Целевой бэкенд (Target):** C99/C11 (`clang -O3`, выравнивание SIMD `__attribute__((aligned(32)))`, `__builtin_popcountll`, OpenMP).
-* **Целевая ниша:** Edge & Embedded AI (обработка видео, звука, сенсорики и гибридных AI-агентов на микрокомпьютерах и контроллерах с ограниченными ресурсами).
-* **Парадигма вычислений:** Hyperdimensional Computing (HDC) + Binary/Bitwise Neural Networks (`bvec<N>` любой ширины) + детерминированная системная логика без GC.
-* **Языковые правила и стиль кода:**
-  * Исходный код компилятора (`*.go`), стандартной библиотеки (`std/*.bc`), примеров (`examples/*.bc`), сообщения компилятора и C-код: **строго на английском языке**.
-  * Проектная документация (`CONTEXT_SNAPSHOT.md`, `specs/SPECIFICATION.md`): на русском языке до этапа релиза.
-  * Ограничение в чате: каждый блок кода в ответе AI — **не более 75 строк**.
-  * Разметка файлов: секции разделяются метками `// MARK: - <Section Title>`.
-  * Документирование Go (`*.go`): стандартный GoDoc + подробные строчные комментарии (`//`) для неочевидной логики и переменных.
-  * Документирование BIT-C (`*.bc`): Doxygen-блоки (`/// @brief`, `@param`, `@return`, `@note`).
+## 1. Философия проекта и правила разработки
+* **Миссия BIT-C:** Компилируемый язык (транслируется в C99/C11 с SIMD/OpenMP) как сверхбыстрая, энергоэффективная альтернатива дорогим вычислениям на GPU и FPU — от микроконтроллеров и умных устройств до серверного инференса и гибридных AI-агентов.
+* **Фундаментальный закон вычислений:** **100% Integer & Bitwise Computing (No Float, No GPU).** Только целочисленная арифметика (`int`, `i32`, `i16`, `i8`, `u8`), фиксированная точка (`Q16.16`) и бинарные гипервекторы (`bvec<N>` любой ширины).
+* **Парадигма:** Hyperdimensional Computing (HDC) + Binary/Bitwise Neural Networks + детерминированная системная логика без GC и скрытых `malloc`.
+* **Авторство и лицензия:** `Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini` (MIT License) в шапке каждого исходного файла.
+* **Стандарты кода и документации:**
+  * Весь код (`*.go`, `*.bc`), комментарии, ошибки компилятора и C-код: **строго на английском языке**.
+  * Проектная документация (`CONTEXT_SNAPSHOT.md`, `specs/SPECIFICATION.md`, `README.md`): на русском языке до этапа релиза.
+  * Ограничение в чате: каждый блок кода от AI — **строго до 75 строк** (осторожно с квадратными скобками в Markdown).
+  * Разметка секций: `// MARK: - <Section Title>` во всех файлах.
+  * Go (`*.go`): стандартный GoDoc + подробные строчные комментарии (`//`).
+  * BIT-C (`*.bc`): Doxygen-блоки (`/// @brief`, `@param`, `@return`, `@note`).
 
+## 2. Актуальная архитектура и статус репозитория
+* **Ядро компилятора (переписано и очищено в v1.1):**
+  * `main.go` — CLI (`./bitc <file.bc>` и `./bitc test <file.bc>`), сборка через `clang -O3` с флагами нативного CPU (`-mcpu=native` / `-march=native`).
+  * `lexer.go` — токенизация, включая `TOK_TEST` (`test`).
+  * `ast.go` — узлы AST с поддержкой шаблонов, ресиверов `(self: *T)`, `parallel for`, `match`, `count`.
+  * `parser.go` — рекурсивный спуск + парсер Пратта, неразрушающий предпросмотр `isGenericCallAhead()` для `<` vs `<T>(`, снижение `test "name" { ... }` в `__bitc_test_<N>`.
+  * `sema.go` — резолвинг `import`, полная мономорфизация типов и констант в структурах/функциях (`substituteType`), поддержка тестового режима `AnalyzeProgram(prog, isTestMode)`.
+  * `codegen.go` — C-бэкенд: `bvec<N>` (`<=64` -> `uintN_t`, `>64` -> 32-байтно выровненный `bvecN_t`), побитовые чтение/запись для любой ширины `N`, `#pragma omp parallel for` перед циклом, маппинг `i8` (без `float`), хук `bitc_assert`.
+* **Стандартная библиотека (`std/`) и тесты (`tests/`):**
+  * `[Done]` `std/test.bc` (`assert_true`, `assert_eq`, `assert_neq`, `assert_popcount<N>`).
+  * `[Done]` `std/sys.bc` (`rand_mask`, `now_ns`, `save_raw`, `load_raw`, `rand_mask256`) + `tests/sys_test.bc`.
+  * `[Done]` `std/encode.bc` (`thermometer64`) + `tests/encode_test.bc`.
+  * `[Done]` `std/learn.bc` (`nudge<N>`) + `tests/learn_test.bc`.
+  * `[Done]` `std/mem.bc` (`RingBuffer<T, Cap>`, `ByteArena<Cap>`) + `tests/mem_test.bc`.
+  * `[In Progress]` `std/tensor.bc` (`TensorView1D<T>`, `TensorView2D<T>`, `quantize_i32_to_i8` Q16.16, `binarize_i8_to_bvec64`) + `tests/tensor_test.bc`.
 
-## 2. Текущая структура проекта и архитектура ядра (BIT-C v1.0)
-* **Файлы компилятора:**
-  * `main.go` — CLI (`build`, `run`), сборка модулей (`import`), запуск `clang`.
-  * `lexer.go` — токенизация (`fn`, `struct`, `import`, `extern`, `parallel`, `for`, `in`, `step`, `if`, `else`, `return`, `match`, `with`, `count`, `nudge`, `bvec`, `slice`, `int`, `f32`, `u8`, `u64`, `bool`, `void`).
-  * `ast.go` — узлы AST (`Program`, `ImportDecl`, `StructDecl`, `FuncDecl` с поддержкой ресивера `(self: *T)`, `ExternFuncDecl`, `VarDecl`, `AssignStmt`, `ForStmt`, `ParallelForStmt`, `IfStmt`, `ReturnStmt`, `MatchExpr`, `CountExpr`, `NudgeStmt`, `IndexExpr`, `MemberExpr`, `CallExpr`).
-  * `parser.go` — рекурсивный спуск, парсинг шаблонов `Name<A, B>` и типов `bvec<N>`, `slice<T>`, `*T`.
-  * `sema.go` — проверка типов, резолвинг импортов (`import "../std/..."`), мономорфизация шаблонных структур и методов (`Dense<256, 8>` -> `Dense_256_8`).
-  * `codegen.go` — генерация C-кода:
-    * `bvec<N>` для `N <= 64` транслируется в `uint64_t`.
-    * `bvec<N>` для `N > 64` транслируется в выровненную структуру `typedef struct { uint64_t w[K]; } __attribute__((aligned(32))) bvecN_t;`.
-    * Побитовые операции (`^`, `&`, `|`, `~`, `<<`, `>>`), `match` (XNOR) и `count` (`__builtin_popcountll`) развернуты в статические циклы по словам `w[k]`.
-* **Текущая `std/` (требует рефакторинга и расширения по `SPEC.md`):**
-  * `std/sys.bc` — `extern fn` обертки над C-рантаймом (`rand_mask`, `now_ns`, `save_raw`, `load_raw`).
-  * `std/encode.bc` — базовая генерация случайных гипервекторов (`rand_mask256`, `rand_mask1024`) и термометрическое кодирование (`thermometer64`).
-  * `std/learn.bc` — шаблонные структуры `Dense<InBits, OutBits>` и `ContextCell<Vocab>`.
+## 3. Дорожная карта (Roadmap)
+* **Этап 1 (Завершен):** Аудит ядра и утверждение спецификации `specs/SPECIFICATION.md`.
+* **Этап 2.0 (Завершен):** Рефакторинг компилятора, фикс широких `bvec<N>` и OpenMP, внедрение `./bitc test`, `std/test.bc` и вынос тестов в `tests/`.
+* **Этап 2.1 (Текущий — Уровень 1 Core):**
+  * [x] `std/mem.bc` + `tests/mem_test.bc`
+  * [~] `std/tensor.bc` + `tests/tensor_test.bc` (дописать проверку сборки + закоммитить)
+  * [ ] `std/stream.bc` (потоковые каналы `Channel<T, Cap>` с backpressure) + тесты
+  * [ ] `std/io.bc` (унифицированные интерфейсы `Reader`/`Writer`, файлы, UART/I2C/GPIO) + тесты
+* **Этап 2.2 (Уровень 4 — Когнитивный слой и агенты):**
+  * [ ] `std/schema.bc` (валидация и парсинг структурированного вывода без исключений)
+  * [ ] `std/flow.bc` (конечные автоматы `StateMachine` и маршрутизация)
+  * [ ] `std/context.bc`, `std/tools.bc`, `std/reasoning.bc` (память, реестр инструментов, циклы самопроверки)
+* **Этап 3 (Уровни 2 и 3 — Сенсорика и локальный инференс):**
+  * [ ] `std/vision.bc`, `std/audio.bc`, `std/infer.bc`, `std/post.bc` (целочисленные БПФ/Mel, NMS, трекер, антидребезг)
+  * [ ] 3 эталонных проекта в `examples/` (Edge Vision, Edge Audio, Hybrid AI Agent) + пользовательская документация в `docs/`.
+* **Этап 4:** Публикация `v0.1-alpha` на GitHub с файлом `LICENSE` (MIT).
 
-## 3. Выявленные баги и технические ограничения ядра (Техдолг)
-1. **Побитовая индексация широких `bvec<N>` (`N > 64`):** В `codegen.go` чтение/запись отдельного бита (`vec[i]` и `vec[i] = bit`) реализованы только для `w <= 64`. Для `w > 64` нужно генерировать обращение к `(vec.w[i >> 6] >> (i & 63)) & 1` (и соответствующую битовую маску при записи).
-2. **Генерация `#pragma omp parallel for`:** В `codegen.go` директива `#pragma omp parallel for` выводится в буфер *после* закрывающей скобки цикла `for`, а не непосредственно перед заголовком цикла.
-3. **Нет встроенного тестирования:** Отсутствуют конструкция `test "name" { ... }`, модуль `std/test.bc` и команда `./bitc test`.
-4. **Нет детерминированных аллокаторов и буферов:** Отсутствуют `ArenaAllocator`, `RingBuffer<T, N>` для потокового аудио/видео на MCU.
-5. **Ограниченная обработка ошибок и C-интероп:** Для модулей `std.vision`, `std.audio`, `std.infer` и `std.schema` нужны типизированные ошибки (или коды возврата / структуры `Result`), работа с массивами/срезами и расширение `extern` C-рантайма.
-
-## 4. Дорожная карта (Актуальный план работ)
-* **Этап 1 (Завершен):** Аудит компилятора и утверждение полной спецификации `SPEC.md` (Уровни 0–4: `std.test`, `std.mem`, `std.tensor`, `std.stream`, `std.io`, `std.vision`, `std.audio`, `std.infer`, `std.post`, `std.schema`, `std.context`, `std.tools`, `std.reasoning`, `std.flow`).
-* **Этап 2.0 (Следующий шаг):** Исправление 2 критических багов в `codegen.go` (индексация битов при `N > 64` и позиция `#pragma omp parallel for`) + внедрение базового фреймворка тестирования (`test "..."`, `std/test.bc`, `./bitc test`).
-* **Этап 2.1:** Реализация Уровня 1 (`std/mem.bc` — `RingBuffer`, `Arena`; `std/tensor.bc`; `std/stream.bc`; `std/io.bc`) с 100% покрытием тестами.
-* **Этап 2.2:** Реализация Уровня 4 (`std/schema.bc`, `std/flow.bc`, `std/context.bc`, `std/tools.bc`, `std/reasoning.bc`) + доработка компилятора под обнаруженные узкие места.
-* **Этап 3:** Реализация Уровней 2 и 3 (`std/vision.bc`, `std/audio.bc`, `std/infer.bc`, `std/post.bc`) и сборка 3 эталонных примеров (Edge Vision, Edge Audio, Hybrid AI Agent).
-* **Этап 4:** Релиз на GitHub (`v0.1-alpha`) для привлечения сообщества.
-
-## Code Style & Documentation Standards (Approved)
-
-1. **Language:** All code, comments, commit messages, compiler diagnostics, and generated C code must be written in **English**.
-2. **Chat Output Limit:** Keep every code block strictly under **75 lines** (split larger changes into sequential logical blocks).
-3. **Section Markers (`MARK`):** Divide every source file (`.go` and `.bc`) into logical sections using `// MARK: - <Section Title>`.
-4. **Go Compiler Code (`*.go`) — Idiomatic GoDoc + Detailed Inline Comments:**
-   * Document every struct, interface, and function with a standard GoDoc comment (`// FuncName does...`), explicitly describing all parameters, return values, and edge cases.
-   * Add detailed inline `//` comments explaining non-trivial AST transformations, memory layout math, and significant local variables.
-5. **BIT-C Standard Library & Examples (`*.bc`) — Doxygen Style:**
-   * Document all public structs, methods, and functions using `///` doc-blocks with `@brief`, `@param`, `@return`, and `@note` (for memory/allocation guarantees).
+## 4. Точка возобновления следующей сессии
+* **Сделано:** Написаны `std/tensor.bc` и `tests/tensor_test.bc`, добавлен `i8` в `codegen.go`.
+* **Следующий шаг:** Прогнать `./bitc test tests/tensor_test.bc`, закоммитить `std/tensor.bc`, и приступить к **`std/stream.bc`** и **`std/io.bc`**.

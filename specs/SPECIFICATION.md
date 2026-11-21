@@ -2,6 +2,12 @@
 
 ## 0. Архитектурные соглашения языка для `stdlib`
 
+### Вычислительный манифест BIT-C (No Float, No GPU)
+* **Строго целочисленная и битовая архитектура:** В стандартной библиотеке BIT-C **полностью отсутствуют** типы с плавающей точкой (`f32`, `f64`) и зависимость от GPU.
+* **Замена `float` в AI-примитивах:**
+  * Квантованные тензоры используют `i8`, `i16`, `i32`, `u8` и упакованные битовые векторы `bvec<N>`.
+  * Масштабирование, пороги, оконные функции (БПФ/Mel) и фильтры используют арифметику с фиксированной точкой **`Q16.16`** (сдвиги `>> 16`) и побитовую логику (`match` / `count`).
+
 Чтобы вся стандартная библиотека (от работы с регистрами MCU до когнитивных агентов) была консистентной, фиксируем базовые правила, которые должен поддерживать компилятор BIT-C:
 
 1. **Обработка ошибок (`Result<T, E>`):**
@@ -181,13 +187,16 @@ test "RingBuffer переполнение и чтение" {
 
 | Модуль | Уровень | Приоритет | Статус | Целевой этап |
 | :--- | :--- | :--- | :--- | :--- |
-| `std.test` | 0. Quality | **P0 (Critical)** | `[Planned]` | Этап 2.1 (Фундамент) |
-| `std.mem` | 1. Core | **P0 (Critical)** | `[Planned]` | Этап 2.1 (Фундамент) |
-| `std.tensor` | 1. Core | **P0 (Critical)** | `[Planned]` | Этап 2.2 (Фундамент) |
-| `std.stream` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.3 (Фундамент) |
-| `std.io` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.3 (Фундамент) |
-| `std.schema` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.4 (AI Core) |
-| `std.flow` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.4 (AI Core) |
+| `std.test` | 0. Quality | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
+| `std.sys` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
+| `std.encode` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
+| `std.learn` | 3. Inference | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
+| `std.mem` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.1 (Фундамент) |
+| `std.tensor` | 1. Core | **P0 (Critical)** | `[In Progress]` | Этап 2.1 (Фундамент) |
+| `std.stream` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.1 (Фундамент) |
+| `std.io` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.1 (Фундамент) |
+| `std.schema` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.2 (AI Core) |
+| `std.flow` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.2 (AI Core) |
 | `std.vision` | 2. Sensors | **P2 (Medium)** | `[Planned]` | Этап 3.1 (Edge Vision) |
 | `std.audio` | 2. Sensors | **P2 (Medium)** | `[Planned]` | Этап 3.2 (Edge Audio) |
 | `std.infer` | 3. Inference | **P2 (Medium)** | `[Planned]` | Этап 3.1 (Edge Vision) |
