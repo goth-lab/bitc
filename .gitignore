@@ -54,3 +54,6 @@ prompt.md
 *.swp
 *.swo
 *~
+
+# Runtime model weight dumps
+weights_slot_*.bin

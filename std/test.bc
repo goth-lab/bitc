@@ -1,0 +1,70 @@
+// MARK: - External C Runtime Assertion Hook
+
+/// @brief Low-level C runtime hook that aborts test execution on assertion failure.
+/// @param cond Boolean/integer condition (0 triggers failure and exit(1)).
+/// @param line Source line or test step identifier printed on failure.
+extern fn bitc_assert(cond: int, line: int);
+
+// MARK: - Core Unit Testing Assertions
+
+/// @brief Verifies that a boolean or integer condition evaluates to non-zero (true).
+/// @param cond Condition expression to verify.
+/// @param step User-defined checkpoint or line number for failure diagnostics.
+fn assert_true(cond: int, step: int) {
+    bitc_assert(cond, step);
+}
+
+/// @brief Verifies that two 64-bit integer values are strictly equal.
+/// @param actual Computed value produced by the code under test.
+/// @param expected Reference expected value.
+/// @param step Checkpoint identifier printed if actual != expected.
+fn assert_eq(actual: int, expected: int, step: int) {
+    if actual != expected {
+        bitc_assert(0, step);
+    }
+}
+
+/// @brief Verifies that two 64-bit integer values are not equal.
+/// @param actual Computed value produced by the code under test.
+/// @param unexpected Forbidden value.
+/// @param step Checkpoint identifier printed if actual == unexpected.
+fn assert_neq(actual: int, unexpected: int, step: int) {
+    if actual == unexpected {
+        bitc_assert(0, step);
+    }
+}
+
+/// @brief Verifies the exact Hamming weight (number of set 1-bits) of a bvec<N>.
+/// @tparam N Bit-width of the target hypervector.
+/// @param vec Target bit-vector to inspect.
+/// @param expected_ones Expected count of 1-bits.
+/// @param step Checkpoint identifier printed on mismatch.
+fn assert_popcount<N>(vec: bvec<N>, expected_ones: int, step: int) {
+    ones: int = count(vec);
+    if ones != expected_ones {
+        bitc_assert(0, step);
+    }
+}
+
+// MARK: - Self-Tests for std/test
+
+test "assert_true and assert_eq basic sanity" {
+    a: int = 21 * 2;
+    assert_true(a == 42, 1);
+    assert_eq(a, 42, 2);
+    assert_neq(a, 0, 3);
+}
+
+test "wide bvec<256> bit-level read/write and popcount" {
+    v: bvec<256>;
+    v[0] = 1;
+    v[63] = 1;
+    v[64] = 1;
+    v[255] = 1;
+    assert_popcount<256>(v, 4, 10);
+    assert_eq(v[64], 1, 11);
+    assert_eq(v[128], 0, 12);
+
+    v[64] = 0;
+    assert_popcount<256>(v, 3, 13);
+}

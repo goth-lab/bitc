@@ -1,34 +1,30 @@
-/// @file sema.go
-/// @brief Семантический анализатор, резолвер импортов и мономорфизатор шаблонов BIT-C v1.0.
-/// @details Подгружает модули стандартной библиотеки (import), разворачивает дженерик-структуры
-/// и функции (<InBits, OutBits>) в конкретные специализации и проверяет совместимость типов.
-
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// MARK: Блок 1 - Структуры контекста проверки и загрузчик модулей import
+// MARK: - Semantic Context and Module Loader
 
-// / @brief Контекст проверки типов и мономорфизации всей программы.
+// SemaContext holds resolved symbol tables, monomorphized AST declarations,
+// inferred expression types, and call target mappings for the entire program.
 type SemaContext struct {
-	StructTemplates map[string]*StructNode ///< Исходные шаблоны структур
-	FuncTemplates   map[string]*FnNode     ///< Исходные шаблоны функций и методов
-	MonoStructs     map[string]*StructNode ///< Конкретные специализации структур (Dense_256_8)
-	MonoFuncs       map[string]*FnNode     ///< Конкретные специализации функций и методов
-	ExprTypes       map[Expr]TypeExpr      ///< Карта выведенных типов для каждого выражения AST
-	ResolvedCalls   map[*CallExpr]string   ///< Карта точных имен C-функций для каждого вызова
-	LoadedFiles     map[string]bool        ///< Защита от повторного импорта файлов
+	StructTemplates map[string]*StructNode // Parsed generic struct templates
+	FuncTemplates   map[string]*FnNode     // Parsed function, method, and test templates
+	MonoStructs     map[string]*StructNode // Specialized structs (e.g., Dense_256_8)
+	MonoFuncs       map[string]*FnNode     // Specialized functions and methods
+	ExprTypes       map[Expr]TypeExpr      // Inferred TypeExpr for every AST expression
+	ResolvedCalls   map[*CallExpr]string   // Resolved C target identifier for each call
+	TestFuncs       []string               // Ordered list of compiled __bitc_test_* names
 }
 
-// / @brief Загружает главный файл программы и рекурсивно подтягивает все import.
-// / @param entryPath Путь к главному .bc файлу.
-// / @return Объединенное дерево ProgramNode со всеми библиотечными функциями.
+// LoadProgramWithImports parses the root BIT-C source file and recursively merges
+// all transitive 'import' dependencies into a single unified ProgramNode.
 func LoadProgramWithImports(entryPath string) (*ProgramNode, error) {
 	visited := make(map[string]bool)
 	master := &ProgramNode{}
@@ -38,7 +34,8 @@ func LoadProgramWithImports(entryPath string) (*ProgramNode, error) {
 	return master, nil
 }
 
-// / @brief Вспомогательная рекурсивная функция чтения и парсинга .bc модулей.
+// loadFileRecursive reads a single .bc module, prevents cyclic imports via visited,
+// and appends its structs and functions to master.
 func loadFileRecursive(filePath string, visited map[string]bool, master *ProgramNode) error {
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
@@ -69,12 +66,11 @@ func loadFileRecursive(filePath string, visited map[string]bool, master *Program
 	return nil
 }
 
-// MARK: Блок 2 - Точка входа семантики и мономорфизация структур
+// MARK: - Program Analysis and Struct Monomorphization
 
-// / @brief Выполняет полный семантический анализ и специализацию шаблонов.
-// / @param prog Объединенное дерево программы.
-// / @return Готовый контекст SemaContext для генератора C-кода или ошибка.
-func AnalyzeProgram(prog *ProgramNode) (*SemaContext, error) {
+// AnalyzeProgram performs semantic analysis and template monomorphization.
+// When isTestMode is true, all '__bitc_test_*' blocks are instantiated instead of 'main'.
+func AnalyzeProgram(prog *ProgramNode, isTestMode bool) (*SemaContext, error) {
 	ctx := &SemaContext{
 		StructTemplates: make(map[string]*StructNode),
 		FuncTemplates:   make(map[string]*FnNode),
@@ -88,23 +84,38 @@ func AnalyzeProgram(prog *ProgramNode) (*SemaContext, error) {
 		ctx.StructTemplates[s.Name] = s
 	}
 	for _, fn := range prog.Funcs {
-		key := fnKey(fn)
-		ctx.FuncTemplates[key] = fn
+		ctx.FuncTemplates[fnKey(fn)] = fn
+	}
+
+	if isTestMode {
+		// Instantiate every registered unit test block in deterministic order.
+		var testKeys []string
+		for k := range ctx.FuncTemplates {
+			if strings.HasPrefix(k, "__bitc_test_") {
+				testKeys = append(testKeys, k)
+			}
+		}
+		sort.Strings(testKeys)
+		for _, tk := range testKeys {
+			if _, err := ctx.instantiateFunc(ctx.FuncTemplates[tk], nil); err != nil {
+				return nil, err
+			}
+			ctx.TestFuncs = append(ctx.TestFuncs, tk)
+		}
+		return ctx, nil
 	}
 
 	mainFn, ok := ctx.FuncTemplates["main"]
 	if !ok {
 		return nil, fmt.Errorf("missing entry point: 'fn main()' not found")
 	}
-
-	// Запускаем проверку и инстанцирование шаблонов начиная с функции main()
 	if _, err := ctx.instantiateFunc(mainFn, nil); err != nil {
 		return nil, err
 	}
 	return ctx, nil
 }
 
-// / @brief Формирует уникальный ключ функции или метода (например, "Dense.forward" или "nudge").
+// fnKey computes a unique symbol table key for a function or receiver method.
 func fnKey(fn *FnNode) string {
 	if fn.Receiver != nil {
 		return fn.Receiver.Type.Name + "." + fn.Name
@@ -112,7 +123,8 @@ func fnKey(fn *FnNode) string {
 	return fn.Name
 }
 
-// / @brief Создает конкретную копию структуры с подстановкой параметров шаблона (Dense<256, 8> -> Dense_256_8).
+// instantiateStruct creates a concrete specialization of a generic struct
+// (e.g., Dense<256, 8> -> Dense_256_8) and instantiates all its bound methods.
 func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 	if t.Name == "bvec" || t.Name == "slice" || t.Name == "int" || t.Name == "bit" || t.Name == "void" {
 		return t, nil
@@ -145,7 +157,6 @@ func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 
 	monoName := baseName + "_" + strings.Join(typeParams, "_")
 	resType := TypeExpr{Line: t.Line, Name: monoName, IsPointer: t.IsPointer, ArraySize: t.ArraySize}
-
 	if _, exists := ctx.MonoStructs[monoName]; exists {
 		return resType, nil
 	}
@@ -157,8 +168,9 @@ func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 
 	monoStruct := &StructNode{Line: tmpl.Line, Name: monoName}
 	for _, f := range tmpl.Fields {
-		subFieldType := substituteType(f.Type, subst)
-		monoStruct.Fields = append(monoStruct.Fields, Field{Line: f.Line, Name: f.Name, Type: subFieldType})
+		monoStruct.Fields = append(monoStruct.Fields, Field{
+			Line: f.Line, Name: f.Name, Type: substituteType(f.Type, subst),
+		})
 	}
 	ctx.MonoStructs[monoName] = monoStruct
 
@@ -172,9 +184,10 @@ func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 	return resType, nil
 }
 
-// MARK: Блок 3 - Специализация функций и методов (Мономорфизация)
+// MARK: - Function Monomorphization and Template Substitution
 
-// / @brief Создает конкретную специализацию функции или метода и проверяет её тело.
+// instantiateFunc clones a function or method template with concrete type arguments
+// and runs type checking over its body statements.
 func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]string) (*FnNode, error) {
 	subst := make(map[string]string)
 	for k, v := range parentSubst {
@@ -221,7 +234,6 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 		monoFn.Receiver = &Field{Line: tmpl.Receiver.Line, Name: tmpl.Receiver.Name, Type: recType}
 		scope[tmpl.Receiver.Name] = recType
 	}
-
 	for _, p := range tmpl.Params {
 		pType := substituteType(p.Type, subst)
 		monoFn.Params = append(monoFn.Params, Field{Line: p.Line, Name: p.Name, Type: pType})
@@ -229,12 +241,10 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 	}
 
 	ctx.MonoFuncs[monoName] = monoFn
-
 	if tmpl.IsExtern {
 		return monoFn, nil
 	}
 
-	// Клонируем и подставляем константы шаблонов внутрь инструкций тела функции
 	monoFn.Body = substituteStmts(tmpl.Body, subst)
 	if err := ctx.checkStmts(monoFn.Body, scope, monoFn.ReturnType); err != nil {
 		return nil, fmt.Errorf("in function '%s': %w", monoName, err)
@@ -242,7 +252,7 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 	return monoFn, nil
 }
 
-// / @brief Подставляет значения параметров шаблона в описание типа (bvec<InBits> -> bvec<256>).
+// substituteType replaces template parameter names inside a TypeExpr with concrete values.
 func substituteType(t TypeExpr, subst map[string]string) TypeExpr {
 	res := t
 	if val, ok := subst[res.ArraySize]; ok {
@@ -265,9 +275,9 @@ func substituteType(t TypeExpr, subst map[string]string) TypeExpr {
 	return res
 }
 
-// MARK: Блок 4 - Клонирование и подстановка параметров шаблона в AST
+// MARK: - AST Cloning and Constant Substitution
 
-// / @brief Заменяет идентификаторы параметров шаблона (OutBits -> 8) в списке инструкций.
+// substituteStmts deep-clones statements while replacing template constants.
 func substituteStmts(stmts []Stmt, subst map[string]string) []Stmt {
 	var res []Stmt
 	for _, s := range stmts {
@@ -303,7 +313,7 @@ func substituteStmts(stmts []Stmt, subst map[string]string) []Stmt {
 	return res
 }
 
-// / @brief Заменяет идентификаторы параметров шаблона в выражениях (например, 0..OutBits -> 0..8).
+// substituteExpr deep-clones expressions and converts matched template identifiers into NumberExprs.
 func substituteExpr(e Expr, subst map[string]string) Expr {
 	if e == nil {
 		return nil
@@ -342,9 +352,9 @@ func substituteExpr(e Expr, subst map[string]string) Expr {
 	return e
 }
 
-// MARK: Блок 5 - Семантическая проверка инструкций и вывод типов выражений
+// MARK: - Statement Type Checking, Expression Inference, and Call Resolution
 
-// / @brief Проверяет корректность типов всех инструкций внутри функции.
+// checkStmts validates types across a block of statements in the given variable scope.
 func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expectedRet TypeExpr) error {
 	for _, s := range stmts {
 		switch st := s.(type) {
@@ -360,7 +370,6 @@ func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expe
 				}
 			}
 			scope[st.Name] = st.Type
-
 		case *AssignStmt:
 			if _, err := ctx.inferExpr(st.Target, scope); err != nil {
 				return err
@@ -368,12 +377,10 @@ func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expe
 			if _, err := ctx.inferExpr(st.Value, scope); err != nil {
 				return err
 			}
-
 		case *ExprStmt:
 			if _, err := ctx.inferExpr(st.Expr, scope); err != nil {
 				return err
 			}
-
 		case *IfStmt:
 			if _, err := ctx.inferExpr(st.Cond, scope); err != nil {
 				return err
@@ -384,20 +391,17 @@ func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expe
 			if err := ctx.checkStmts(st.ElseBody, scope, expectedRet); err != nil {
 				return err
 			}
-
 		case *ForStmt:
 			scope[st.Iterator] = TypeExpr{Line: st.Line, Name: "int"}
 			if err := ctx.checkStmts(st.Body, scope, expectedRet); err != nil {
 				return err
 			}
-
 		case *ReturnStmt:
 			if st.Value != nil {
 				if _, err := ctx.inferExpr(st.Value, scope); err != nil {
 					return err
 				}
 			}
-
 		case *PrintStmt:
 			if _, err := ctx.inferExpr(st.Value, scope); err != nil {
 				return err
@@ -407,7 +411,7 @@ func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expe
 	return nil
 }
 
-// / @brief Выводит тип выражения и разрешает вызовы шаблонных функций и методов.
+// inferExpr computes and caches the resulting TypeExpr for any expression AST node.
 func (ctx *SemaContext) inferExpr(e Expr, scope map[string]TypeExpr) (TypeExpr, error) {
 	if e == nil {
 		return TypeExpr{Name: "void"}, nil
@@ -427,10 +431,9 @@ func (ctx *SemaContext) inferExpr(e Expr, scope map[string]TypeExpr) (TypeExpr, 
 		if err != nil {
 			return res, err
 		}
-		switch ex.Op {
-		case "*":
+		if ex.Op == "*" {
 			rt.IsPointer = false
-		case "&":
+		} else if ex.Op == "&" {
 			rt.IsPointer = true
 		}
 		res = rt
@@ -487,7 +490,7 @@ func (ctx *SemaContext) inferExpr(e Expr, scope map[string]TypeExpr) (TypeExpr, 
 	return res, nil
 }
 
-// / @brief Разрешает вызов встроенных интринсиков (match, count), функций и Go-методов.
+// resolveCall resolves built-in intrinsics (match, count), functions, and receiver methods.
 func (ctx *SemaContext) resolveCall(call *CallExpr, scope map[string]TypeExpr) (TypeExpr, error) {
 	if ident, ok := call.Callee.(*IdentExpr); ok {
 		if ident.Name == "match" {
@@ -547,7 +550,6 @@ func (ctx *SemaContext) resolveCall(call *CallExpr, scope map[string]TypeExpr) (
 		return monoFn.ReturnType, nil
 	}
 
-	// Вызов Go-метода через точку: layer1.forward(x)
 	if fieldEx, ok := call.Callee.(*FieldExpr); ok {
 		objType, err := ctx.inferExpr(fieldEx.Obj, scope)
 		if err != nil {
@@ -570,7 +572,7 @@ func (ctx *SemaContext) resolveCall(call *CallExpr, scope map[string]TypeExpr) (
 	return TypeExpr{}, fmt.Errorf("[Line %d] invalid call target", call.Line)
 }
 
-// / @brief Извлекает числовую ширину битового вектора из TypeExpr (например, bvec<256> -> 256).
+// getBitWidth extracts the integer bit width from a bvec<N> TypeExpr (returns 0 otherwise).
 func getBitWidth(t TypeExpr) int {
 	if t.Name == "bvec" && len(t.TypeParams) > 0 {
 		w, _ := strconv.Atoi(t.TypeParams[0])

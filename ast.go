@@ -1,225 +1,224 @@
-/// @file ast.go
-/// @brief Определение узлов абстрактного синтаксического дерева (AST) языка BIT-C v1.0.
-/// @details Содержит структуры для представления типов данных, выражений (Expr),
-/// инструкций управления потоком (Stmt) и объявлений верхнего уровня (Decl).
-
+// Package main implements the BIT-C compiler frontend, semantic analyzer, and C backend.
 package main
 
-// MARK: Блок 1 - Базовые интерфейсы узлов и система типов
+// MARK: - Core AST Interfaces and Type Representation
 
-// / @brief Базовый интерфейс любого узла синтаксического дерева.
+// Node is the base interface implemented by every AST node for source location tracking.
 type Node interface {
-	PosLine() int ///< Возвращает номер строки в исходном файле для диагностики ошибок
+	// PosLine returns the 1-based source line number where the node starts.
+	PosLine() int
 }
 
-// / @brief Базовый интерфейс для любых выражений (возвращают значение).
+// Expr is the marker interface for all AST nodes that evaluate to a value.
 type Expr interface {
 	Node
 	exprNode()
 }
 
-// / @brief Базовый интерфейс для исполняемых инструкций (не возвращают значение).
+// Stmt is the marker interface for all executable AST statements.
 type Stmt interface {
 	Node
 	stmtNode()
 }
 
-// / @brief Представление типа данных в языке BIT-C.
-// / @details Поддерживает примитивы (int, bvec<256>), указатели (*T),
-// / статические массивы (T[N]), срезы (slice<T>) и дженерик-структуры (Dense<256, 8>).
+// TypeExpr represents a resolved or parsed type annotation in BIT-C
+// (e.g., primitives, bvec<N>, pointers *T, fixed arrays T[N], slices, or generic structs).
 type TypeExpr struct {
-	Line       int      ///< Номер строки объявления типа
-	Name       string   ///< Базовое имя типа (например, "bvec", "int", "Dense", "slice")
-	IsPointer  bool     ///< Флаг указателя (*Type)
-	ArraySize  string   ///< Размер статического массива (пусто, если это не массив)
-	TypeParams []string ///< Параметры в угловых скобках <256, 8> или <N>
+	Line       int      // Source line number of the type annotation
+	Name       string   // Base type identifier (e.g., "bvec", "int", "Dense", "slice")
+	IsPointer  bool     // True when prefixed with '*' (e.g., *Dense<256, 8>)
+	ArraySize  string   // Static array length expression; empty for non-array types
+	TypeParams []string // Generic type or bit-width arguments inside '<...>'
 }
 
+// PosLine returns the source line number of the TypeExpr.
 func (t TypeExpr) PosLine() int { return t.Line }
 
-// MARK: Блок 2 - Узлы верхнего уровня (Программа, Импорты, Структуры, Функции)
+// MARK: - Top-Level Declarations (Program, Structs, Functions)
 
-// / @brief Корневой узел всей скомпилированной программы BIT-C.
+// ProgramNode is the root AST node representing a complete BIT-C compilation unit.
 type ProgramNode struct {
-	Imports []string      ///< Список импортированных файлов стандартной библиотеки
-	Structs []*StructNode ///< Объявления структур данных
-	Funcs   []*FnNode     ///< Объявления функций и привязанных к структурам методов
+	Imports []string      // Relative paths to imported BIT-C modules
+	Structs []*StructNode // All struct declarations in the module
+	Funcs   []*FnNode     // All standalone functions and struct-bound methods
 }
 
-// / @brief Описание отдельного поля структуры или параметра функции.
+// Field describes a struct member or a function/method parameter.
 type Field struct {
-	Line int      ///< Номер строки
-	Name string   ///< Имя поля или параметра
-	Type TypeExpr ///< Тип данных
+	Line int      // Source line number
+	Name string   // Identifier of the field or parameter
+	Type TypeExpr // Declared type of the field or parameter
 }
 
-// / @brief Объявление структуры данных (struct Name<T1, T2> { ... }).
+// StructNode represents a user-defined structure (struct Name<T1, T2> { ... }).
 type StructNode struct {
-	Line       int      ///< Номер строки
-	Name       string   ///< Имя структуры
-	TypeParams []string ///< Имена параметров шаблона (например, ["InBits", "OutBits"])
-	Fields     []Field  ///< Список полей структуры
+	Line       int      // Source line number
+	Name       string   // Struct type name
+	TypeParams []string // Generic parameter names (e.g., ["InBits", "OutBits"])
+	Fields     []Field  // Ordered list of struct fields
 }
 
+// PosLine returns the source line number of the StructNode.
 func (s *StructNode) PosLine() int { return s.Line }
 
-// / @brief Объявление функции или Go-метода (fn (self: *T) name(...) -> Ret { ... }).
+// FnNode represents a function, external C declaration, or Go-style receiver method.
 type FnNode struct {
-	Line       int      ///< Номер строки
-	Receiver   *Field   ///< Получатель метода (nil для обычных функций)
-	Name       string   ///< Имя функции или метода
-	TypeParams []string ///< Параметры шаблона функции (например, <N>)
-	Params     []Field  ///< Список входных аргументов
-	ReturnType TypeExpr ///< Возвращаемый тип (Name == "void", если не указан)
-	Body       []Stmt   ///< Тело функции (список инструкций)
-	IsExtern   bool     ///< Флаг внешней системной функции (без тела на BIT-C)
+	Line       int      // Source line number
+	Receiver   *Field   // Optional method receiver (e.g., self: *Dense); nil for functions
+	Name       string   // Function or method name
+	TypeParams []string // Generic parameter names (e.g., ["N"])
+	Params     []Field  // Input parameter list
+	ReturnType TypeExpr // Return type ("void" when omitted)
+	Body       []Stmt   // Executable body statements (empty when IsExtern is true)
+	IsExtern   bool     // True for external C runtime functions (extern fn)
 }
 
+// PosLine returns the source line number of the FnNode.
 func (f *FnNode) PosLine() int { return f.Line }
 
-// MARK: Блок 3 - Исполняемые инструкции (Statements)
+// MARK: - Executable Statements
 
-// / @brief Объявление локальной переменной (x: int = 10; или arr: bvec<64>[4];).
+// VarDeclStmt represents a local variable declaration (e.g., x: int = 10;).
 type VarDeclStmt struct {
-	Line  int      ///< Номер строки
-	Name  string   ///< Имя переменной
-	Type  TypeExpr ///< Явно указанный тип переменной
-	Value Expr     ///< Начальное значение (nil, если инициализируется нулями)
+	Line  int      // Source line number
+	Name  string   // Local variable name
+	Type  TypeExpr // Explicit variable type
+	Value Expr     // Initializer expression; nil triggers zero-initialization ({0})
 }
 
 func (s *VarDeclStmt) PosLine() int { return s.Line }
 func (s *VarDeclStmt) stmtNode()    {}
 
-// / @brief Инструкция присваивания (target = value;).
-// / @details Целью может быть переменная, поле структуры (a.b), элемент массива (a[i]) или указатель (*p).
+// AssignStmt represents an assignment to an addressable target (target = value;).
 type AssignStmt struct {
-	Line   int  ///< Номер строки
-	Target Expr ///< Левая часть присваивания (L-value)
-	Value  Expr ///< Правая вычисляемая часть (R-value)
+	Line   int  // Source line number
+	Target Expr // Assignable L-value (variable, field, array slot, or bvec bit)
+	Value  Expr // Evaluable R-value expression
 }
 
 func (s *AssignStmt) PosLine() int { return s.Line }
 func (s *AssignStmt) stmtNode()    {}
 
-// / @brief Вызов функции или метода как самостоятельная инструкция (без присваивания).
+// ExprStmt wraps a standalone expression executed for side effects (e.g., call()).
 type ExprStmt struct {
-	Line int  ///< Номер строки
-	Expr Expr ///< Вычисляемое выражение (обычно CallExpr)
+	Line int  // Source line number
+	Expr Expr // Underlying expression
 }
 
 func (s *ExprStmt) PosLine() int { return s.Line }
 func (s *ExprStmt) stmtNode()    {}
 
-// / @brief Условное ветвление (if cond { ... } else { ... }).
+// IfStmt represents a conditional branch (if cond { ... } else { ... }).
 type IfStmt struct {
-	Line     int    ///< Номер строки
-	Cond     Expr   ///< Условие проверки
-	ThenBody []Stmt ///< Ветка истины
-	ElseBody []Stmt ///< Ветка лжи (может быть пустой)
+	Line     int    // Source line number
+	Cond     Expr   // Boolean condition expression
+	ThenBody []Stmt // Statements executed when Cond evaluates to true
+	ElseBody []Stmt // Optional statements executed when Cond evaluates to false
 }
 
 func (s *IfStmt) PosLine() int { return s.Line }
 func (s *IfStmt) stmtNode()    {}
 
-// / @brief Цикл по диапазону (for i in 0..N step S { ... } или parallel for ...).
+// ForStmt represents a bounded range loop (for i in start..end step s { ... }).
 type ForStmt struct {
-	Line       int    ///< Номер строки
-	IsParallel bool   ///< Флаг распараллеливания по ядрам CPU (parallel for)
-	Iterator   string ///< Имя переменной-счетчика
-	Start      Expr   ///< Начальное значение диапазона
-	End        Expr   ///< Конечное значение диапазона (не включительно)
-	Step       Expr   ///< Шаг итерации (nil, если шаг по умолчанию равен 1)
-	Body       []Stmt ///< Тело цикла
+	Line       int    // Source line number
+	IsParallel bool   // True when prefixed with 'parallel' for OpenMP execution
+	Iterator   string // Loop counter variable name
+	Start      Expr   // Inclusive lower bound expression
+	End        Expr   // Exclusive upper bound expression
+	Step       Expr   // Optional increment expression; defaults to 1 when nil
+	Body       []Stmt // Loop body statements
 }
 
 func (s *ForStmt) PosLine() int { return s.Line }
 func (s *ForStmt) stmtNode()    {}
 
-// / @brief Возврат значения из функции (return expr;) и отладочный вывод (print expr;).
+// ReturnStmt represents a function return statement (return expr;).
 type ReturnStmt struct {
-	Line  int  ///< Номер строки
-	Value Expr ///< Возвращаемое выражение (nil для пустого return;)
+	Line  int  // Source line number
+	Value Expr // Returned expression; nil for void functions
 }
 
 func (s *ReturnStmt) PosLine() int { return s.Line }
 func (s *ReturnStmt) stmtNode()    {}
 
+// PrintStmt represents a built-in diagnostic print statement (print expr;).
 type PrintStmt struct {
-	Line  int  ///< Номер строки
-	Value Expr ///< Выражение для вывода в консоль
+	Line  int  // Source line number
+	Value Expr // Integer or bit-vector expression to print
 }
 
 func (s *PrintStmt) PosLine() int { return s.Line }
 func (s *PrintStmt) stmtNode()    {}
 
-// MARK: Блок 4 - Атомарные выражения (Expressions)
+// MARK: - Expressions
 
-// / @brief Числовой или шестнадцатеричный литерал (42, 0xFF00).
+// NumberExpr represents a decimal or hexadecimal integer literal (e.g., 42, 0xFF).
 type NumberExpr struct {
-	Line  int    ///< Номер строки
-	Value string ///< Строковое представление числа
-	IsHex bool   ///< Флаг шестнадцатеричного формата (0x...)
+	Line  int    // Source line number
+	Value string // Raw literal text
+	IsHex bool   // True if literal starts with "0x"
 }
 
 func (e *NumberExpr) PosLine() int { return e.Line }
 func (e *NumberExpr) exprNode()    {}
 
-// / @brief Обращение к переменной по имени.
+// IdentExpr represents a variable or symbol reference by name.
 type IdentExpr struct {
-	Line int    ///< Номер строки
-	Name string ///< Имя идентификатора
+	Line int    // Source line number
+	Name string // Referenced identifier
 }
 
 func (e *IdentExpr) PosLine() int { return e.Line }
 func (e *IdentExpr) exprNode()    {}
 
-// / @brief Унарная операция (~x, -x, *ptr, &val).
+// UnaryExpr represents a prefix unary operation (~x, -x, *ptr, &val).
 type UnaryExpr struct {
-	Line  int    ///< Номер строки
-	Op    string ///< Оператор ("~", "-", "*", "&")
-	Right Expr   ///< Операнд
+	Line  int    // Source line number
+	Op    string // Unary operator token
+	Right Expr   // Operand expression
 }
 
 func (e *UnaryExpr) PosLine() int { return e.Line }
 func (e *UnaryExpr) exprNode()    {}
 
-// / @brief Бинарная операция (a + b, a ^ b, a & b, a > b, a << 1).
+// BinaryExpr represents an infix binary operation (e.g., a ^ b, a + b, a << 1).
 type BinaryExpr struct {
-	Line  int    ///< Номер строки
-	Left  Expr   ///< Левый операнд
-	Op    string ///< Оператор ("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", ">", "<=", ">=")
-	Right Expr   ///< Правый операнд
+	Line  int    // Source line number
+	Left  Expr   // Left-hand operand
+	Op    string // Binary operator token
+	Right Expr   // Right-hand operand
 }
 
 func (e *BinaryExpr) PosLine() int { return e.Line }
 func (e *BinaryExpr) exprNode()    {}
 
-// / @brief Вызов функции, метода или встроенного интринсика (match, count).
+// CallExpr represents a function call, method invocation, or intrinsic (match/count).
 type CallExpr struct {
-	Line     int      ///< Номер строки
-	Callee   Expr     ///< Вызываемая сущность (IdentExpr или FieldExpr для obj.method)
-	TypeArgs []string ///< Явные параметры шаблона при вызове (например, nudge<256>(...))
-	Args     []Expr   ///< Список передаваемых аргументов
+	Line     int      // Source line number
+	Callee   Expr     // Target function (IdentExpr) or method receiver expression (FieldExpr)
+	TypeArgs []string // Explicit generic arguments at call site (e.g., nudge<256>)
+	Args     []Expr   // Positional call arguments
 }
 
 func (e *CallExpr) PosLine() int { return e.Line }
 func (e *CallExpr) exprNode()    {}
 
-// / @brief Доступ к полю или методу структуры через точку (obj.field).
+// FieldExpr represents member access on a struct or pointer (obj.field).
 type FieldExpr struct {
-	Line  int    ///< Номер строки
-	Obj   Expr   ///< Выражение-владелец структуры
-	Field string ///< Имя поля или метода
+	Line  int    // Source line number
+	Obj   Expr   // Owner struct or pointer expression
+	Field string // Member field or method name
 }
 
 func (e *FieldExpr) PosLine() int { return e.Line }
 func (e *FieldExpr) exprNode()    {}
 
-// / @brief Индексация массива или отдельного бита вектора (arr[i] или vec[0]).
+// IndexExpr represents array element indexing (arr[i]) or single-bit access (vec[i]).
 type IndexExpr struct {
-	Line  int  ///< Номер строки
-	Obj   Expr ///< Массив или битовый вектор
-	Index Expr ///< Выражение индекса
+	Line  int  // Source line number
+	Obj   Expr // Target array or bvec<N> expression
+	Index Expr // Zero-based index expression
 }
 
 func (e *IndexExpr) PosLine() int { return e.Line }

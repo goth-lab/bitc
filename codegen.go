@@ -1,8 +1,3 @@
-/// @file codegen.go
-/// @brief Генератор низкоуровневого C-кода (Backend) для компилятора BIT-C v1.0.
-/// @details Транслирует мономорфизированное AST в выровненные структуры C,
-/// статические inline-функции и аппаратные SIMD-интринсики процессора.
-
 package main
 
 import (
@@ -11,17 +6,17 @@ import (
 	"strings"
 )
 
-// MARK: Блок 1 - Инициализация генератора и базовый рантайм кремния
+// MARK: - CodeGenerator State and Entry Point
 
-// / @brief Состояние генератора C-кода.
+// CodeGenerator translates a monomorphized SemaContext AST into aligned C99/C11 code.
 type CodeGenerator struct {
-	ctx       *SemaContext    ///< Контекст типов и специализаций из семантического анализатора
-	sb        strings.Builder ///< Буфер выходного C-кода
-	wideSizes map[int]bool    ///< Набор использованных ширин широких векторов (> 64 бит)
-	tempID    int             ///< Счетчик временных переменных C
+	ctx       *SemaContext    // Type-checked AST and monomorphized symbol tables
+	sb        strings.Builder // Output buffer accumulating generated C source
+	wideSizes map[int]bool    // Set of bvec<N> bit-widths > 64 used in the program
+	tempID    int             // Monotonic counter for unique temporary C variables
 }
 
-// / @brief Генерирует полный исходный файл на языке C из проверенного AST.
+// GenerateCCode compiles the validated SemaContext into a complete C source file string.
 func GenerateCCode(ctx *SemaContext) string {
 	g := &CodeGenerator{
 		ctx:       ctx,
@@ -37,25 +32,27 @@ func GenerateCCode(ctx *SemaContext) string {
 	return g.sb.String()
 }
 
-// / @brief Собирает все ширины bvec<N> (> 64 бит), встречающиеся в программе.
+// collectWideVectors scans all expression types and struct fields to register every
+// bvec<N> width exceeding 64 bits so corresponding bvecN_t typedefs can be emitted.
 func (g *CodeGenerator) collectWideVectors() {
 	for _, t := range g.ctx.ExprTypes {
-		w := getBitWidth(t)
-		if w > 64 {
+		if w := getBitWidth(t); w > 64 {
 			g.wideSizes[w] = true
 		}
 	}
 	for _, st := range g.ctx.MonoStructs {
 		for _, f := range st.Fields {
-			w := getBitWidth(f.Type)
-			if w > 64 {
+			if w := getBitWidth(f.Type); w > 64 {
 				g.wideSizes[w] = true
 			}
 		}
 	}
 }
 
-// / @brief Записывает заголовки C, генератор случайных битов и структуры широких векторов.
+// MARK: - C Runtime Header and Wide Vector Typedefs
+
+// emitHeader writes standard C includes, inline runtime helpers (PRNG, monotonic clock,
+// raw binary persistence), and 32-byte SIMD-aligned typedefs for wide bvec<N> types.
 func (g *CodeGenerator) emitHeader() {
 	g.sb.WriteString("#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <time.h>\n\n")
 	g.sb.WriteString(`static uint64_t _rng_state = 88172645463325252ULL;
@@ -85,7 +82,14 @@ static inline void load_raw(int64_t slot, void* ptr, int64_t bytes) {
 	FILE* f = fopen(name, "rb");
 	if (f) { size_t r = fread(ptr, 1, (size_t)bytes, f); (void)r; fclose(f); }
 }
+static inline void bitc_assert(int64_t cond, int64_t line) {
+	if (!cond) {
+		fprintf(stderr, "[BIT-C TEST FAIL] Assertion failed at line %lld\n", (long long)line);
+		exit(1);
+	}
+}
 `)
+	// Emit deterministic sorted typedefs for all wide bvec<N> widths.
 	var widths []int
 	for w := range g.wideSizes {
 		widths = append(widths, w)
@@ -93,25 +97,25 @@ static inline void load_raw(int64_t slot, void* ptr, int64_t bytes) {
 	sort.Ints(widths)
 	for _, w := range widths {
 		words := w / 64
-		g.sb.WriteString(fmt.Sprintf("typedef struct __attribute__((aligned(32))) { uint64_t w[%d]; } bvec%d_t;\n", words, w))
+		fmt.Fprintf(&g.sb, "typedef struct __attribute__((aligned(32))) { uint64_t w[%d]; } bvec%d_t;\n", words, w)
 	}
 	g.sb.WriteString("\n")
 }
 
-// MARK: Блок 2 - Генерация пользовательских структур и прототипов функций
+// MARK: - Structs and Function Declarations
 
-// / @brief Генерирует C-структуры из мономорфизированных шаблонов (Dense_256_8).
+// emitStructs emits C typedef structs for all monomorphized BIT-C structures.
 func (g *CodeGenerator) emitStructs() {
 	for _, st := range g.ctx.MonoStructs {
 		g.sb.WriteString("typedef struct {\n")
 		for _, f := range st.Fields {
-			g.sb.WriteString(fmt.Sprintf("    %s;\n", g.formatVarDecl(f.Name, f.Type)))
+			fmt.Fprintf(&g.sb, "    %s;\n", g.formatVarDecl(f.Name, f.Type))
 		}
-		g.sb.WriteString(fmt.Sprintf("} %s;\n\n", st.Name))
+		fmt.Fprintf(&g.sb, "} %s;\n\n", st.Name)
 	}
 }
 
-// / @brief Генерирует предварительные объявления всех функций (forward declarations).
+// emitFuncPrototypes emits forward declarations for all non-extern functions.
 func (g *CodeGenerator) emitFuncPrototypes() {
 	for _, fn := range g.ctx.MonoFuncs {
 		if fn.Name == "main" || fn.IsExtern {
@@ -123,7 +127,7 @@ func (g *CodeGenerator) emitFuncPrototypes() {
 	g.sb.WriteString("\n")
 }
 
-// / @brief Генерирует реализации всех специализированных функций и методов.
+// emitFuncs emits full C function definitions for all monomorphized BIT-C functions.
 func (g *CodeGenerator) emitFuncs() {
 	for _, fn := range g.ctx.MonoFuncs {
 		if fn.IsExtern {
@@ -139,7 +143,7 @@ func (g *CodeGenerator) emitFuncs() {
 	}
 }
 
-// / @brief Формирует заголовок C-функции с учетом ресивера метода (self: *T).
+// buildFnSignature formats a C function header, prepending the receiver pointer for methods.
 func (g *CodeGenerator) buildFnSignature(fn *FnNode) string {
 	if fn.Name == "main" {
 		return "int main()"
@@ -155,9 +159,9 @@ func (g *CodeGenerator) buildFnSignature(fn *FnNode) string {
 	return fmt.Sprintf("static inline %s %s(%s)", ret, fn.Name, strings.Join(params, ", "))
 }
 
-// MARK: Блок 3 - Генерация исполняемых инструкций (Statements)
+// MARK: - Statement Code Generation
 
-// / @brief Генерирует C-код для списка инструкций с заданным отступом.
+// emitStmts translates a slice of AST statements into indented C statements.
 func (g *CodeGenerator) emitStmts(stmts []Stmt, indent string) {
 	for _, s := range stmts {
 		switch st := s.(type) {
@@ -165,21 +169,30 @@ func (g *CodeGenerator) emitStmts(stmts []Stmt, indent string) {
 			decl := g.formatVarDecl(st.Name, st.Type)
 			if st.Value != nil {
 				valStr := g.emitExpr(st.Value, indent)
-				g.sb.WriteString(fmt.Sprintf("%s%s = %s;\n", indent, decl, valStr))
+				fmt.Fprintf(&g.sb, "%s%s = %s;\n", indent, decl, valStr)
 			} else {
-				g.sb.WriteString(fmt.Sprintf("%s%s = {0};\n", indent, decl))
+				fmt.Fprintf(&g.sb, "%s%s = {0};\n", indent, decl)
 			}
 
 		case *AssignStmt:
-			// Запись отдельного бита в скалярный вектор (только если это НЕ массив!)
+			// Support single-bit mutation on bvec<N> scalars (both <= 64 and > 64 bits).
 			if idxEx, ok := st.Target.(*IndexExpr); ok {
 				objType := g.ctx.ExprTypes[idxEx.Obj]
-				if objType.ArraySize == "" && objType.Name == "bvec" && getBitWidth(objType) <= 64 {
+				if objType.ArraySize == "" && objType.Name == "bvec" {
+					w := getBitWidth(objType)
 					vecStr := g.emitExpr(idxEx.Obj, indent)
 					idxStr := g.emitExpr(idxEx.Index, indent)
 					valStr := g.emitExpr(st.Value, indent)
-					g.sb.WriteString(fmt.Sprintf("%sif (%s) { %s |= (1ULL << (%s)); } else { %s &= ~(1ULL << (%s)); }\n",
-						indent, valStr, vecStr, idxStr, vecStr, idxStr))
+					if w <= 64 {
+						fmt.Fprintf(&g.sb, "%sif (%s) { %s |= (1ULL << (%s)); } else { %s &= ~(1ULL << (%s)); }\n",
+							indent, valStr, vecStr, idxStr, vecStr, idxStr)
+					} else {
+						// Wide bvecN_t word-indexed bit write: word = idx >> 6, bit = idx & 63.
+						tmpIdx := g.nextTemp()
+						fmt.Fprintf(&g.sb, "%suint64_t %s = (uint64_t)(%s);\n", indent, tmpIdx, idxStr)
+						fmt.Fprintf(&g.sb, "%sif (%s) { (%s).w[%s >> 6] |= (1ULL << (%s & 63)); } else { (%s).w[%s >> 6] &= ~(1ULL << (%s & 63)); }\n",
+							indent, valStr, vecStr, tmpIdx, tmpIdx, vecStr, tmpIdx, tmpIdx)
+					}
 					continue
 				}
 			}
@@ -188,18 +201,16 @@ func (g *CodeGenerator) emitStmts(stmts []Stmt, indent string) {
 			fmt.Fprintf(&g.sb, "%s%s = %s;\n", indent, targetStr, valStr)
 
 		case *ExprStmt:
-			exprStr := g.emitExpr(st.Expr, indent)
-			g.sb.WriteString(fmt.Sprintf("%s%s;\n", indent, exprStr))
+			fmt.Fprintf(&g.sb, "%s%s;\n", indent, g.emitExpr(st.Expr, indent))
 
 		case *IfStmt:
-			condStr := g.emitExpr(st.Cond, indent)
-			g.sb.WriteString(fmt.Sprintf("%sif (%s) {\n", indent, condStr))
+			fmt.Fprintf(&g.sb, "%sif (%s) {\n", indent, g.emitExpr(st.Cond, indent))
 			g.emitStmts(st.ThenBody, indent+"    ")
 			if len(st.ElseBody) > 0 {
-				g.sb.WriteString(fmt.Sprintf("%s} else {\n", indent))
+				fmt.Fprintf(&g.sb, "%s} else {\n", indent)
 				g.emitStmts(st.ElseBody, indent+"    ")
 			}
-			g.sb.WriteString(fmt.Sprintf("%s}\n", indent))
+			fmt.Fprintf(&g.sb, "%s}\n", indent)
 
 		case *ForStmt:
 			startStr := g.emitExpr(st.Start, indent)
@@ -208,35 +219,35 @@ func (g *CodeGenerator) emitStmts(stmts []Stmt, indent string) {
 			if st.Step != nil {
 				stepStr = g.emitExpr(st.Step, indent)
 			}
-			g.sb.WriteString(fmt.Sprintf("%sfor (int %s = %s; %s < %s; %s += %s) {\n",
-				indent, st.Iterator, startStr, st.Iterator, endStr, st.Iterator, stepStr))
-			g.emitStmts(st.Body, indent+"    ")
+			// Emit OpenMP directive directly above the C loop header.
 			if st.IsParallel {
-				g.sb.WriteString(fmt.Sprintf("%s#if defined(_OPENMP)\n%s#pragma omp parallel for\n%s#endif\n", indent, indent, indent))
+				fmt.Fprintf(&g.sb, "%s#if defined(_OPENMP)\n%s#pragma omp parallel for\n%s#endif\n", indent, indent, indent)
 			}
-			g.sb.WriteString(fmt.Sprintf("%s}\n", indent))
+			fmt.Fprintf(&g.sb, "%sfor (int %s = %s; %s < %s; %s += %s) {\n",
+				indent, st.Iterator, startStr, st.Iterator, endStr, st.Iterator, stepStr)
+			g.emitStmts(st.Body, indent+"    ")
+			fmt.Fprintf(&g.sb, "%s}\n", indent)
 
 		case *ReturnStmt:
 			if st.Value != nil {
-				valStr := g.emitExpr(st.Value, indent)
-				g.sb.WriteString(fmt.Sprintf("%sreturn %s;\n", indent, valStr))
+				fmt.Fprintf(&g.sb, "%sreturn %s;\n", indent, g.emitExpr(st.Value, indent))
 			} else {
-				g.sb.WriteString(fmt.Sprintf("%sreturn;\n", indent))
+				fmt.Fprintf(&g.sb, "%sreturn;\n", indent)
 			}
 
 		case *PrintStmt:
-			valStr := g.emitExpr(st.Value, indent)
 			tmp := g.nextTemp()
-			fmt.Fprintf(&g.sb, "%sint64_t %s = (int64_t)(%s);\n", indent, tmp, valStr)
+			fmt.Fprintf(&g.sb, "%sint64_t %s = (int64_t)(%s);\n", indent, tmp, g.emitExpr(st.Value, indent))
 			fmt.Fprintf(&g.sb, "%sprintf(\"[BIT-C] 0x%%llX (dec: %%lld)\\n\", (unsigned long long)%s, (long long)%s);\n",
 				indent, tmp, tmp)
 		}
 	}
 }
 
-// MARK: Блок 4 - Генерация выражений и аппаратных интринсиков
+// MARK: - Expression Code Generation
 
-// / @brief Генерирует C-выражение (при необходимости разворачивая широкие SIMD-векторы во временные переменные).
+// emitExpr translates an AST expression into a C expression string, unrolling wide
+// SIMD vector operations into temporary local variables when bit-width exceeds 64.
 func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 	switch ex := e.(type) {
 	case *NumberExpr:
@@ -251,13 +262,12 @@ func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 	case *UnaryExpr:
 		rType := g.ctx.ExprTypes[ex.Right]
 		rStr := g.emitExpr(ex.Right, indent)
-		w := getBitWidth(rType)
-		if ex.Op == "~" && w > 64 {
+		if w := getBitWidth(rType); ex.Op == "~" && w > 64 {
 			tmp := g.nextTemp()
 			words := w / 64
-			g.sb.WriteString(fmt.Sprintf("%sbvec%d_t %s;\n", indent, w, tmp))
-			g.sb.WriteString(fmt.Sprintf("%sfor (int _k = 0; _k < %d; _k++) { %s.w[_k] = ~(%s).w[_k]; }\n",
-				indent, words, tmp, rStr))
+			fmt.Fprintf(&g.sb, "%sbvec%d_t %s;\n", indent, w, tmp)
+			fmt.Fprintf(&g.sb, "%sfor (int _k = 0; _k < %d; _k++) { %s.w[_k] = ~(%s).w[_k]; }\n",
+				indent, words, tmp, rStr)
 			return tmp
 		}
 		return fmt.Sprintf("(%s%s)", ex.Op, rStr)
@@ -266,8 +276,7 @@ func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 		lType := g.ctx.ExprTypes[ex.Left]
 		lStr := g.emitExpr(ex.Left, indent)
 		rStr := g.emitExpr(ex.Right, indent)
-		w := getBitWidth(lType)
-		if w > 64 && (ex.Op == "^" || ex.Op == "&" || ex.Op == "|") {
+		if w := getBitWidth(lType); w > 64 && (ex.Op == "^" || ex.Op == "&" || ex.Op == "|") {
 			tmp := g.nextTemp()
 			words := w / 64
 			fmt.Fprintf(&g.sb, "%sbvec%d_t %s;\n", indent, w, tmp)
@@ -289,8 +298,14 @@ func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 		objType := g.ctx.ExprTypes[ex.Obj]
 		objStr := g.emitExpr(ex.Obj, indent)
 		idxStr := g.emitExpr(ex.Index, indent)
-		if objType.ArraySize == "" && objType.Name == "bvec" && getBitWidth(objType) <= 64 {
-			return fmt.Sprintf("((%s >> (%s)) & 1ULL)", objStr, idxStr)
+		// Support single-bit reads on both scalar (<= 64) and wide (> 64) bvec<N>.
+		if objType.ArraySize == "" && objType.Name == "bvec" {
+			if getBitWidth(objType) <= 64 {
+				return fmt.Sprintf("((%s >> (%s)) & 1ULL)", objStr, idxStr)
+			}
+			tmpIdx := g.nextTemp()
+			fmt.Fprintf(&g.sb, "%suint64_t %s = (uint64_t)(%s);\n", indent, tmpIdx, idxStr)
+			return fmt.Sprintf("(((%s).w[%s >> 6] >> (%s & 63)) & 1ULL)", objStr, tmpIdx, tmpIdx)
 		}
 		return fmt.Sprintf("%s[%s]", objStr, idxStr)
 
@@ -300,9 +315,10 @@ func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 	return ""
 }
 
-// MARK: Блок 5 - Генерация вызовов функций, методов, интринсиков и типов C
+// MARK: - Intrinsics, Function Calls, and C Type Mapping
 
-// / @brief Генерирует C-код для вызова функции, Go-метода или интринсика.
+// emitCallExpr generates C code for built-in intrinsics (match, count), receiver
+// method calls, and regular functions.
 func (g *CodeGenerator) emitCallExpr(call *CallExpr, indent string) string {
 	targetName := g.ctx.ResolvedCalls[call]
 
@@ -314,9 +330,9 @@ func (g *CodeGenerator) emitCallExpr(call *CallExpr, indent string) string {
 		if w > 64 {
 			tmp := g.nextTemp()
 			words := w / 64
-			g.sb.WriteString(fmt.Sprintf("%sbvec%d_t %s;\n", indent, w, tmp))
-			g.sb.WriteString(fmt.Sprintf("%sfor (int _k = 0; _k < %d; _k++) { %s.w[_k] = ~((%s).w[_k] ^ (%s).w[_k]); }\n",
-				indent, words, tmp, aStr, bStr))
+			fmt.Fprintf(&g.sb, "%sbvec%d_t %s;\n", indent, w, tmp)
+			fmt.Fprintf(&g.sb, "%sfor (int _k = 0; _k < %d; _k++) { %s.w[_k] = ~((%s).w[_k] ^ (%s).w[_k]); }\n",
+				indent, words, tmp, aStr, bStr)
 			return tmp
 		}
 		mask := uint64((1 << w) - 1)
@@ -333,16 +349,16 @@ func (g *CodeGenerator) emitCallExpr(call *CallExpr, indent string) string {
 		if w > 64 {
 			tmp := g.nextTemp()
 			words := w / 64
-			g.sb.WriteString(fmt.Sprintf("%sint %s = 0;\n", indent, tmp))
-			g.sb.WriteString(fmt.Sprintf("%sfor (int _k = 0; _k < %d; _k++) { %s += __builtin_popcountll((%s).w[_k]); }\n",
-				indent, words, tmp, aStr))
+			fmt.Fprintf(&g.sb, "%sint %s = 0;\n", indent, tmp)
+			fmt.Fprintf(&g.sb, "%sfor (int _k = 0; _k < %d; _k++) { %s += __builtin_popcountll((%s).w[_k]); }\n",
+				indent, words, tmp, aStr)
 			return tmp
 		}
 		return fmt.Sprintf("__builtin_popcountll((uint64_t)(%s))", aStr)
 	}
 
 	var args []string
-	// Если это вызов метода структуры (obj.method(...)), передаем &obj первым аргументом
+	// Automatically pass &obj as the first receiver argument for struct method calls.
 	if fieldEx, ok := call.Callee.(*FieldExpr); ok {
 		objType := g.ctx.ExprTypes[fieldEx.Obj]
 		objStr := g.emitExpr(fieldEx.Obj, indent)
@@ -359,13 +375,13 @@ func (g *CodeGenerator) emitCallExpr(call *CallExpr, indent string) string {
 	return fmt.Sprintf("%s(%s)", targetName, strings.Join(args, ", "))
 }
 
-// / @brief Создает уникальное имя временной переменной в C.
+// nextTemp generates a unique sequential temporary variable identifier in C.
 func (g *CodeGenerator) nextTemp() string {
 	g.tempID++
 	return fmt.Sprintf("_tmp_%d", g.tempID)
 }
 
-// / @brief Форматирует объявление переменной или поля на языке C (с учетом массивов и указателей).
+// formatVarDecl formats a C variable or struct field declaration with optional array bounds.
 func (g *CodeGenerator) formatVarDecl(name string, t TypeExpr) string {
 	base := g.mapCType(t)
 	if t.ArraySize != "" {
@@ -374,7 +390,7 @@ func (g *CodeGenerator) formatVarDecl(name string, t TypeExpr) string {
 	return fmt.Sprintf("%s %s", base, name)
 }
 
-// / @brief Преобразует TypeExpr языка BIT-C в нативный тип C.
+// mapCType converts a BIT-C TypeExpr into its corresponding native C type name.
 func (g *CodeGenerator) mapCType(t TypeExpr) string {
 	ptr := ""
 	if t.IsPointer {

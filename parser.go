@@ -1,15 +1,10 @@
-/// @file parser.go
-/// @brief Синтаксический анализатор (парсер) ядра языка BIT-C v1.0.
-/// @details Реализует рекурсивный спуск для разбора объявлений (struct, fn, import)
-/// и алгоритм Пратта (Pratt Parsing) для разбора выражений с учетом приоритета операторов.
-
 package main
 
 import "fmt"
 
-// MARK: Блок 1 - Инициализация парсера, приоритеты операторов и хелперы
+// MARK: - Operator Precedence and Parser State
 
-// / @brief Уровни приоритета бинарных и постфиксных операторов.
+// Operator binding precedence levels for Pratt expression parsing.
 const (
 	PREC_LOWEST  = iota
 	PREC_COMPARE // ==, !=, <, >, <=, >=
@@ -22,7 +17,7 @@ const (
 	PREC_CALL    // func(), obj.field, arr[i]
 )
 
-// / @brief Таблица соответствия типов токенов их приоритетам.
+// precedences maps infix/postfix TokenTypes to their binding power.
 var precedences = map[TokenType]int{
 	TOK_EQ: PREC_COMPARE, TOK_NEQ: PREC_COMPARE,
 	TOK_LT: PREC_COMPARE, TOK_GT: PREC_COMPARE,
@@ -35,14 +30,14 @@ var precedences = map[TokenType]int{
 	TOK_LPAREN: PREC_CALL, TOK_DOT: PREC_CALL, TOK_LBRACKET: PREC_CALL,
 }
 
-// / @brief Состояние синтаксического анализатора.
+// Parser implements a recursive-descent and Pratt parser for BIT-C source files.
 type Parser struct {
-	lexer   *Lexer ///< Лексический анализатор-источник токенов
-	curTok  Token  ///< Текущий рассматриваемый токен
-	peekTok Token  ///< Следующий токен (предпросмотр на 1 шаг вперед)
+	lexer   *Lexer // Underlying lexical scanner
+	curTok  Token  // Current token under inspection
+	peekTok Token  // One-token lookahead buffer
 }
 
-// / @brief Создает новый парсер и загружает первые два токена.
+// NewParser initializes a Parser and preloads the two-token lookahead window.
 func NewParser(l *Lexer) *Parser {
 	p := &Parser{lexer: l}
 	p.nextToken()
@@ -50,13 +45,13 @@ func NewParser(l *Lexer) *Parser {
 	return p
 }
 
-// / @brief Сдвигает окно токенов на один шаг вперед.
+// nextToken advances curTok and pulls the next token from the Lexer.
 func (p *Parser) nextToken() {
 	p.curTok = p.peekTok
 	p.peekTok = p.lexer.NextToken()
 }
 
-// / @brief Проверяет текущий токен на соответствие ожидаемому и сдвигает курсор.
+// expect verifies that curTok matches t, advances the cursor, and returns the token.
 func (p *Parser) expect(t TokenType) Token {
 	if p.curTok.Type != t {
 		panic(fmt.Sprintf("[Line %d] Syntax error: expected %s, got %s ('%s')",
@@ -67,7 +62,7 @@ func (p *Parser) expect(t TokenType) Token {
 	return tok
 }
 
-// / @brief Считывает идентификатор (разрешает также слова 'in' и 'step' в роли имен).
+// expectIdent consumes an identifier token (also permitting contextual keywords 'in'/'step').
 func (p *Parser) expectIdent() Token {
 	if p.curTok.Type == TOK_IDENT || p.curTok.Type == TOK_IN || p.curTok.Type == TOK_STEP {
 		tok := p.curTok
@@ -78,11 +73,12 @@ func (p *Parser) expectIdent() Token {
 		p.curTok.Line, p.curTok.Type, p.curTok.Literal))
 }
 
-// MARK: Блок 2 - Разбор верхнего уровня программы и сложных типов данных
+// MARK: - Top-Level Parsing and Type Expressions
 
-// / @brief Разбирает весь исходный файл в корневой узел ProgramNode.
+// ParseProgram parses an entire BIT-C source file into a root ProgramNode.
 func (p *Parser) ParseProgram() *ProgramNode {
 	prog := &ProgramNode{}
+	testIdx := 0
 	for p.curTok.Type != TOK_EOF {
 		switch p.curTok.Type {
 		case TOK_IMPORT:
@@ -96,6 +92,9 @@ func (p *Parser) ParseProgram() *ProgramNode {
 			prog.Structs = append(prog.Structs, p.parseStruct())
 		case TOK_FN, TOK_EXTERN:
 			prog.Funcs = append(prog.Funcs, p.parseFn())
+		case TOK_TEST:
+			testIdx++
+			prog.Funcs = append(prog.Funcs, p.parseTest(testIdx))
 		default:
 			panic(fmt.Sprintf("[Line %d] Unexpected top-level token: %s ('%s')",
 				p.curTok.Line, p.curTok.Type, p.curTok.Literal))
@@ -104,13 +103,28 @@ func (p *Parser) ParseProgram() *ProgramNode {
 	return prog
 }
 
-// / @brief Разбирает список параметров шаблона в угловых скобках <T1, T2>.
+// parseTest parses a built-in unit test block: test "description" { ... }
+// and lowers it into an internal zero-argument FnNode named __bitc_test_<idx>.
+func (p *Parser) parseTest(idx int) *FnNode {
+	line := p.expect(TOK_TEST).Line
+	_ = p.expect(TOK_STRING).Literal // Test description stored for runner integration
+	p.expect(TOK_LBRACE)
+	body := p.parseBlock()
+	return &FnNode{
+		Line:       line,
+		Name:       fmt.Sprintf("__bitc_test_%d", idx),
+		ReturnType: TypeExpr{Line: line, Name: "void"},
+		Body:       body,
+	}
+}
+
+// parseTypeParams parses generic arguments enclosed in angle brackets <T1, T2>.
 func (p *Parser) parseTypeParams() []string {
 	var params []string
 	if p.curTok.Type != TOK_LT {
 		return params
 	}
-	p.nextToken() // Пропускаем '<'
+	p.nextToken() // Skip '<'
 	for p.curTok.Type != TOK_GT && p.curTok.Type != TOK_EOF {
 		if p.curTok.Type == TOK_IDENT || p.curTok.Type == TOK_NUMBER {
 			params = append(params, p.curTok.Literal)
@@ -126,7 +140,7 @@ func (p *Parser) parseTypeParams() []string {
 	return params
 }
 
-// / @brief Разбирает описание типа: *Dense<256, 8>[4], bvec<64>, int.
+// parseType parses type annotations such as *Dense<256, 8>[4], bvec<64>, or int.
 func (p *Parser) parseType() TypeExpr {
 	line := p.curTok.Line
 	isPtr := false
@@ -151,9 +165,9 @@ func (p *Parser) parseType() TypeExpr {
 	}
 }
 
-// MARK: Блок 3 - Разбор структур данных и Go-методов
+// MARK: - Struct and Function Declarations
 
-// / @brief Разбирает объявление структуры struct Name<...> { field: Type; }.
+// parseStruct parses a structure definition: struct Name<...> { field: Type; }.
 func (p *Parser) parseStruct() *StructNode {
 	line := p.expect(TOK_STRUCT).Line
 	name := p.expectIdent().Literal
@@ -173,7 +187,7 @@ func (p *Parser) parseStruct() *StructNode {
 	return &StructNode{Line: line, Name: name, TypeParams: tParams, Fields: fields}
 }
 
-// / @brief Разбирает объявление функции или метода с ресивером fn (self: *T) name(...) -> Ret { ... }.
+// parseFn parses standalone functions, extern C prototypes, and receiver methods.
 func (p *Parser) parseFn() *FnNode {
 	isExtern := false
 	if p.curTok.Type == TOK_EXTERN {
@@ -183,7 +197,7 @@ func (p *Parser) parseFn() *FnNode {
 	line := p.expect(TOK_FN).Line
 	var receiver *Field
 
-	// Если после 'fn' идет '(', значит это метод, привязанный к структуре
+	// Parse Go-style method receiver when '(' immediately follows 'fn'.
 	if p.curTok.Type == TOK_LPAREN {
 		p.nextToken()
 		rLine := p.curTok.Line
@@ -232,9 +246,9 @@ func (p *Parser) parseFn() *FnNode {
 	}
 }
 
-// MARK: Блок 4 - Разбор блоков кода и исполняемых инструкций (Statements)
+// MARK: - Block and Statement Parsing
 
-// / @brief Разбирает блок инструкций внутри фигурных скобок { ... }.
+// parseBlock parses a brace-delimited list of statements until '}'.
 func (p *Parser) parseBlock() []Stmt {
 	var stmts []Stmt
 	for p.curTok.Type != TOK_RBRACE && p.curTok.Type != TOK_EOF {
@@ -244,7 +258,7 @@ func (p *Parser) parseBlock() []Stmt {
 	return stmts
 }
 
-// / @brief Разбирает одну исполняемую инструкцию.
+// parseStatement dispatches and parses a single executable statement.
 func (p *Parser) parseStatement() Stmt {
 	line := p.curTok.Line
 	switch p.curTok.Type {
@@ -268,7 +282,7 @@ func (p *Parser) parseStatement() Stmt {
 		return &PrintStmt{Line: line, Value: val}
 	}
 
-	// Если текущий токен — имя и за ним идет ':', это объявление переменной (x: int = 5;)
+	// Variable declaration: name: Type = init;
 	if (p.curTok.Type == TOK_IDENT || p.curTok.Type == TOK_IN) && p.peekTok.Type == TOK_COLON {
 		name := p.expectIdent().Literal
 		p.expect(TOK_COLON)
@@ -282,7 +296,7 @@ func (p *Parser) parseStatement() Stmt {
 		return &VarDeclStmt{Line: line, Name: name, Type: vType, Value: initVal}
 	}
 
-	// Иначе разбираем левое выражение (может оказаться присваиванием или вызовом функции)
+	// Assignment or standalone expression statement.
 	left := p.parseExpr(PREC_LOWEST)
 	if p.curTok.Type == TOK_ASSIGN {
 		p.nextToken()
@@ -294,7 +308,7 @@ func (p *Parser) parseStatement() Stmt {
 	return &ExprStmt{Line: line, Expr: left}
 }
 
-// / @brief Разбирает условный оператор if cond { ... } else { ... }.
+// parseIfStmt parses an if-else conditional statement.
 func (p *Parser) parseIfStmt() *IfStmt {
 	line := p.expect(TOK_IF).Line
 	cond := p.parseExpr(PREC_LOWEST)
@@ -309,7 +323,7 @@ func (p *Parser) parseIfStmt() *IfStmt {
 	return &IfStmt{Line: line, Cond: cond, ThenBody: thenBody, ElseBody: elseBody}
 }
 
-// / @brief Разбирает цикл for / parallel for i in start..end step s { ... }.
+// parseForStmt parses sequential and OpenMP parallel bounded range loops.
 func (p *Parser) parseForStmt() *ForStmt {
 	line := p.curTok.Line
 	isParallel := false
@@ -336,14 +350,14 @@ func (p *Parser) parseForStmt() *ForStmt {
 	}
 }
 
-// MARK: Блок 5 - Разбор выражений (Pratt Parser)
+// MARK: - Pratt Expression Parsing
 
-// / @brief Разбирает выражение с учетом приоритета операторов.
+// parseExpr parses an expression respecting operator binding precedences.
 func (p *Parser) parseExpr(precedence int) Expr {
 	left := p.parsePrefix()
 
 	for p.curTok.Type != TOK_SEMI && p.curTok.Type != TOK_EOF {
-		// Обработка дженерик-вызова вида nudge<256>(...)
+		// Handle explicit generic call syntax: nudge<256>(...)
 		if p.curTok.Type == TOK_LT && p.isGenericCallAhead() {
 			tArgs := p.parseTypeParams()
 			left = p.parseCallExpr(left, tArgs)
@@ -380,7 +394,7 @@ func (p *Parser) parseExpr(precedence int) Expr {
 	return left
 }
 
-// / @brief Разбирает первичные и унарные выражения (числа, имена, скобки, ~x, *p, &x).
+// parsePrefix parses primary expressions and prefix unary operators.
 func (p *Parser) parsePrefix() Expr {
 	line := p.curTok.Line
 	switch p.curTok.Type {
@@ -389,7 +403,7 @@ func (p *Parser) parsePrefix() Expr {
 		val := p.curTok.Literal
 		p.nextToken()
 		return &NumberExpr{Line: line, Value: val, IsHex: isHex}
-	case TOK_IDENT, TOK_IN:
+	case TOK_IDENT, TOK_IN, TOK_STEP:
 		name := p.curTok.Literal
 		p.nextToken()
 		return &IdentExpr{Line: line, Name: name}
@@ -408,7 +422,7 @@ func (p *Parser) parsePrefix() Expr {
 		p.curTok.Line, p.curTok.Type, p.curTok.Literal))
 }
 
-// / @brief Разбирает аргументы вызова функции или метода (arg1, arg2).
+// parseCallExpr parses a parenthesized argument list for a function or method call.
 func (p *Parser) parseCallExpr(callee Expr, tArgs []string) *CallExpr {
 	line := p.expect(TOK_LPAREN).Line
 	var args []Expr
@@ -422,7 +436,7 @@ func (p *Parser) parseCallExpr(callee Expr, tArgs []string) *CallExpr {
 	return &CallExpr{Line: line, Callee: callee, TypeArgs: tArgs, Args: args}
 }
 
-// / @brief Проверяет, является ли '<' началом списка шаблонных аргументов перед '('.
+// isGenericCallAhead checks whether '<' begins generic type arguments before '('.
 func (p *Parser) isGenericCallAhead() bool {
 	return p.peekTok.Type == TOK_NUMBER || p.peekTok.Type == TOK_IDENT
 }

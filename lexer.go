@@ -1,8 +1,3 @@
-/// @file lexer.go
-/// @brief Лексический анализатор (токенизатор) ядра языка BIT-C v1.0.
-/// @details Преобразует исходный текст программы в поток типизированных токенов
-/// с отслеживанием номеров строк для точной диагностики ошибок.
-
 package main
 
 import (
@@ -10,81 +5,83 @@ import (
 	"unicode"
 )
 
-// MARK: Блок 1 - Определение типов токенов и структур лексера
+// MARK: - Token Definitions and Keyword Table
 
-// / @brief Тип лексического токена ядра языка BIT-C.
+// TokenType identifies the lexical category of a scanned BIT-C token.
 type TokenType string
 
 const (
-	TOK_EOF     TokenType = "EOF"     ///< Конец исходного файла
-	TOK_ILLEGAL TokenType = "ILLEGAL" ///< Неизвестный или ошибочный символ
-	TOK_IDENT   TokenType = "IDENT"   ///< Идентификатор (имя переменной, типа, функции)
-	TOK_NUMBER  TokenType = "NUMBER"  ///< Десятичное целое число
-	TOK_HEX     TokenType = "HEX"     ///< Шестнадцатеричная битовая маска (0x...)
-	TOK_STRING  TokenType = "STRING"  ///< Строковый литерал в двойных кавычках
+	TOK_EOF     TokenType = "EOF"     // End of source input
+	TOK_ILLEGAL TokenType = "ILLEGAL" // Unrecognized or invalid character
+	TOK_IDENT   TokenType = "IDENT"   // Identifier (variable, type, or function name)
+	TOK_NUMBER  TokenType = "NUMBER"  // Decimal integer literal
+	TOK_HEX     TokenType = "HEX"     // Hexadecimal bitmask literal (0x...)
+	TOK_STRING  TokenType = "STRING"  // Double-quoted string literal
 
-	// Ключевые слова ядра языка
-	TOK_STRUCT   TokenType = "STRUCT"   ///< Объявление структуры (struct)
-	TOK_FN       TokenType = "FN"       ///< Объявление функции или метода (fn)
-	TOK_IMPORT   TokenType = "IMPORT"   ///< Подключение модуля библиотеки (import)
-	TOK_FOR      TokenType = "FOR"      ///< Начало цикла (for)
-	TOK_PARALLEL TokenType = "PARALLEL" ///< Модификатор многопоточности (parallel)
-	TOK_IN       TokenType = "IN"       ///< Разделитель диапазона в цикле (in)
-	TOK_STEP     TokenType = "STEP"     ///< Шаг итерации цикла (step)
-	TOK_IF       TokenType = "IF"       ///< Условный оператор (if)
-	TOK_ELSE     TokenType = "ELSE"     ///< Альтернативная ветка условия (else)
-	TOK_RETURN   TokenType = "RETURN"   ///< Возврат значения из функции (return)
-	TOK_PRINT    TokenType = "PRINT"    ///< Отладочный вывод (print)
-	TOK_EXTERN   TokenType = "EXTERN"   ///< Объявление внешней системной функции (extern)
+	// Core language keywords
+	TOK_STRUCT   TokenType = "STRUCT"   // Structure declaration (struct)
+	TOK_FN       TokenType = "FN"       // Function or method declaration (fn)
+	TOK_TEST     TokenType = "TEST"     // Built-in unit test block (test)
+	TOK_IMPORT   TokenType = "IMPORT"   // Module import directive (import)
+	TOK_FOR      TokenType = "FOR"      // Range loop keyword (for)
+	TOK_PARALLEL TokenType = "PARALLEL" // OpenMP parallel loop modifier (parallel)
+	TOK_IN       TokenType = "IN"       // Loop range separator (in)
+	TOK_STEP     TokenType = "STEP"     // Loop step modifier (step)
+	TOK_IF       TokenType = "IF"       // Conditional branch (if)
+	TOK_ELSE     TokenType = "ELSE"     // Alternative conditional branch (else)
+	TOK_RETURN   TokenType = "RETURN"   // Function return statement (return)
+	TOK_PRINT    TokenType = "PRINT"    // Diagnostic print statement (print)
+	TOK_EXTERN   TokenType = "EXTERN"   // External C runtime function declaration (extern)
 
-	// Арифметические, побитовые и логические операторы
-	TOK_ASSIGN  TokenType = "="  ///< Присваивание
-	TOK_PLUS    TokenType = "+"  ///< Сложение
-	TOK_MINUS   TokenType = "-"  ///< Вычитание
-	TOK_STAR    TokenType = "*"  ///< Умножение или разыменование указателя
-	TOK_SLASH   TokenType = "/"  ///< Целочисленное деление
-	TOK_PERCENT TokenType = "%"  ///< Остаток от деления
-	TOK_AMP     TokenType = "&"  ///< Побитовое И или взятие адреса переменной
-	TOK_PIPE    TokenType = "|"  ///< Побитовое ИЛИ
-	TOK_CARET   TokenType = "^"  ///< Побитовое исключающее ИЛИ (XOR)
-	TOK_TILDE   TokenType = "~"  ///< Побитовая инверсия (NOT)
-	TOK_SHL     TokenType = "<<" ///< Побитовый сдвиг влево
-	TOK_SHR     TokenType = ">>" ///< Побитовый сдвиг вправо
+	// Arithmetic, bitwise, and logical operators
+	TOK_ASSIGN  TokenType = "="  // Assignment
+	TOK_PLUS    TokenType = "+"  // Addition
+	TOK_MINUS   TokenType = "-"  // Subtraction or unary negation
+	TOK_STAR    TokenType = "*"  // Multiplication or pointer dereference
+	TOK_SLASH   TokenType = "/"  // Integer division
+	TOK_PERCENT TokenType = "%"  // Modulo remainder
+	TOK_AMP     TokenType = "&"  // Bitwise AND or address-of
+	TOK_PIPE    TokenType = "|"  // Bitwise OR
+	TOK_CARET   TokenType = "^"  // Bitwise XOR
+	TOK_TILDE   TokenType = "~"  // Bitwise NOT
+	TOK_SHL     TokenType = "<<" // Bitwise shift left
+	TOK_SHR     TokenType = ">>" // Bitwise shift right
 
-	// Операторы сравнения
-	TOK_EQ  TokenType = "==" ///< Равно
-	TOK_NEQ TokenType = "!=" ///< Не равно
-	TOK_LT  TokenType = "<"  ///< Меньше или открывающая угловая скобка дженерика
-	TOK_GT  TokenType = ">"  ///< Больше или закрывающая угловая скобка дженерика
-	TOK_LE  TokenType = "<=" ///< Меньше или равно
-	TOK_GE  TokenType = ">=" ///< Больше или равно
+	// Comparison operators
+	TOK_EQ  TokenType = "==" // Equal
+	TOK_NEQ TokenType = "!=" // Not equal
+	TOK_LT  TokenType = "<"  // Less than or generic opening bracket
+	TOK_GT  TokenType = ">"  // Greater than or generic closing bracket
+	TOK_LE  TokenType = "<=" // Less than or equal
+	TOK_GE  TokenType = ">=" // Greater than or equal
 
-	// Разделители и скобки
-	TOK_COLON    TokenType = ":"  ///< Двоеточие (указание типа)
-	TOK_SEMI     TokenType = ";"  ///< Точка с запятой
-	TOK_COMMA    TokenType = ","  ///< Запятая
-	TOK_DOT      TokenType = "."  ///< Точка (доступ к полю или методу структуры)
-	TOK_RANGE    TokenType = ".." ///< Диапазон значений (0..N)
-	TOK_ARROW    TokenType = "->" ///< Указание возвращаемого типа функции
-	TOK_LPAREN   TokenType = "("  ///< Левая круглая скобка
-	TOK_RPAREN   TokenType = ")"  ///< Правая круглая скобка
-	TOK_LBRACE   TokenType = "{"  ///< Левая фигурная скобка
-	TOK_RBRACE   TokenType = "}"  ///< Правая фигурная скобка
-	TOK_LBRACKET TokenType = "["  ///< Левая квадратная скобка
-	TOK_RBRACKET TokenType = "]"  ///< Правая квадратная скобка
+	// Delimiters and punctuation
+	TOK_COLON    TokenType = ":"  // Type annotation separator
+	TOK_SEMI     TokenType = ";"  // Statement terminator
+	TOK_COMMA    TokenType = ","  // List separator
+	TOK_DOT      TokenType = "."  // Struct member access
+	TOK_RANGE    TokenType = ".." // Half-open range operator (start..end)
+	TOK_ARROW    TokenType = "->" // Function return type arrow
+	TOK_LPAREN   TokenType = "("  // Left parenthesis
+	TOK_RPAREN   TokenType = ")"  // Right parenthesis
+	TOK_LBRACE   TokenType = "{"  // Left curly brace
+	TOK_RBRACE   TokenType = "}"  // Right curly brace
+	TOK_LBRACKET TokenType = "["  // Left square bracket
+	TOK_RBRACKET TokenType = "]"  // Right square bracket
 )
 
-// / @brief Структура отдельного токена исходного кода.
+// Token represents a single scanned lexical unit with its source line number.
 type Token struct {
-	Type    TokenType ///< Категория токена
-	Literal string    ///< Текстовое представление токена в коде
-	Line    int       ///< Номер строки в исходном файле
+	Type    TokenType // Lexical category
+	Literal string    // Raw matched text
+	Line    int       // 1-based source line number
 }
 
-// / @brief Таблица зарезервированных ключевых слов ядра BIT-C.
+// keywords maps reserved BIT-C keywords to their corresponding TokenType.
 var keywords = map[string]TokenType{
 	"struct":   TOK_STRUCT,
 	"fn":       TOK_FN,
+	"test":     TOK_TEST,
 	"import":   TOK_IMPORT,
 	"for":      TOK_FOR,
 	"parallel": TOK_PARALLEL,
@@ -97,24 +94,21 @@ var keywords = map[string]TokenType{
 	"extern":   TOK_EXTERN,
 }
 
-// MARK: Блок 2 - Инициализация лексера и основной цикл сканирования
+// MARK: - Lexer State and Main Tokenizer Loop
 
-// / @brief Состояние лексического анализатора.
+// Lexer holds the scanning state for a BIT-C source buffer.
 type Lexer struct {
-	input string ///< Исходный код программы
-	pos   int    ///< Текущая позиция курсора в строке input
-	line  int    ///< Текущий номер строки
+	input string // Full source text
+	pos   int    // Current byte offset in input
+	line  int    // Current 1-based line number
 }
 
-// / @brief Создает и инициализирует новый экземпляр лексера.
-// / @param input Строка с исходным кодом на языке BIT-C.
-// / @return Указатель на готовый к работе Lexer.
+// NewLexer creates and initializes a Lexer starting at line 1.
 func NewLexer(input string) *Lexer {
 	return &Lexer{input: input, pos: 0, line: 1}
 }
 
-// / @brief Извлекает следующий токен из входного потока.
-// / @return Структура Token с типом, текстом и номером строки.
+// NextToken advances the scanner and returns the next lexical Token.
 func (l *Lexer) NextToken() Token {
 	l.skipWhitespaceAndComments()
 
@@ -125,7 +119,7 @@ func (l *Lexer) NextToken() Token {
 	ch := l.input[l.pos]
 	nextCh := l.peek()
 
-	// Проверка двухсимвольных операторов
+	// Match two-character operators first.
 	twoChar := string([]byte{ch, nextCh})
 	twoCharMap := map[string]TokenType{
 		"->": TOK_ARROW, "..": TOK_RANGE,
@@ -138,7 +132,7 @@ func (l *Lexer) NextToken() Token {
 		return Token{Type: tokType, Literal: twoChar, Line: l.line}
 	}
 
-	// Проверка односимвольных операторов и разделителей
+	// Match single-character operators and delimiters.
 	oneCharMap := map[byte]TokenType{
 		'=': TOK_ASSIGN, '+': TOK_PLUS, '-': TOK_MINUS,
 		'*': TOK_STAR, '/': TOK_SLASH, '%': TOK_PERCENT,
@@ -154,17 +148,12 @@ func (l *Lexer) NextToken() Token {
 		return Token{Type: tokType, Literal: string(ch), Line: l.line}
 	}
 
-	// Строковые литералы в кавычках (для путей import)
 	if ch == '"' {
 		return l.readString()
 	}
-
-	// Идентификаторы и ключевые слова (разрешаем символ '_' в именах)
 	if unicode.IsLetter(rune(ch)) || ch == '_' {
 		return l.readIdentifier()
 	}
-
-	// Десятичные и шестнадцатеричные числа
 	if unicode.IsDigit(rune(ch)) {
 		return l.readNumber()
 	}
@@ -173,23 +162,23 @@ func (l *Lexer) NextToken() Token {
 	return Token{Type: TOK_ILLEGAL, Literal: string(ch), Line: l.line}
 }
 
-// MARK: Блок 3 - Вспомогательные методы чтения литералов и пропуска комментариев
+// MARK: - Literal Scanners and Whitespace Handling
 
-// / @brief Считывает строковый литерал до закрывающей кавычки.
+// readString scans a double-quoted string literal (used for import paths and test names).
 func (l *Lexer) readString() Token {
-	l.pos++ // Пропускаем открывающую кавычку
+	l.pos++ // Skip opening quote
 	start := l.pos
 	for l.pos < len(l.input) && l.input[l.pos] != '"' && l.input[l.pos] != '\n' {
 		l.pos++
 	}
 	str := l.input[start:l.pos]
 	if l.pos < len(l.input) && l.input[l.pos] == '"' {
-		l.pos++ // Пропускаем закрывающую кавычку
+		l.pos++ // Skip closing quote
 	}
 	return Token{Type: TOK_STRING, Literal: str, Line: l.line}
 }
 
-// / @brief Считывает слово и определяет, является ли оно ключевым словом или именем.
+// readIdentifier scans an alphanumeric/underscore word and checks the keyword table.
 func (l *Lexer) readIdentifier() Token {
 	start := l.pos
 	for l.pos < len(l.input) {
@@ -207,7 +196,7 @@ func (l *Lexer) readIdentifier() Token {
 	return Token{Type: TOK_IDENT, Literal: word, Line: l.line}
 }
 
-// / @brief Считывает числовой литерал (обычный десятичный или 0x-шестнадцатеричный).
+// readNumber scans a decimal integer or a 0x-prefixed hexadecimal literal.
 func (l *Lexer) readNumber() Token {
 	start := l.pos
 	if l.input[l.pos] == '0' && (l.peek() == 'x' || l.peek() == 'X') {
@@ -223,7 +212,7 @@ func (l *Lexer) readNumber() Token {
 	return Token{Type: TOK_NUMBER, Literal: l.input[start:l.pos], Line: l.line}
 }
 
-// / @brief Возвращает следующий символ без сдвига курсора.
+// peek returns the next byte without advancing the lexer cursor.
 func (l *Lexer) peek() byte {
 	if l.pos+1 >= len(l.input) {
 		return 0
@@ -231,7 +220,7 @@ func (l *Lexer) peek() byte {
 	return l.input[l.pos+1]
 }
 
-// / @brief Пропускает пробельные символы, переносы строк и однострочные комментарии //.
+// skipWhitespaceAndComments advances past spaces, newlines, and '//' line comments.
 func (l *Lexer) skipWhitespaceAndComments() {
 	for l.pos < len(l.input) {
 		ch := l.input[l.pos]
