@@ -1,0 +1,57 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/schema_test.bc
+// Description: Unit tests for std/schema.bc (SchemaValidator contracts and strict ASCII parser).
+
+import "../std/test.bc";
+import "../std/sys.bc";
+import "../std/schema.bc";
+
+// MARK: - Unit Tests for std/schema
+
+test "SchemaValidator validates multi-field AI command contract" {
+    v: SchemaValidator;
+    v.init();
+
+    // Field 1: action_id (required non-zero), Field 2: speed_pct [0..100], Field 3: embedding
+    hv: bvec<256> = rand_mask256();
+    v.check_required(1, 7);
+    v.check_range(2, 85, 0, 100);
+    v.check_density256(3, hv, 4);
+
+    assert_eq(v.is_valid, 1, 1);
+    assert_eq(v.error_code, schema_ok(), 2);
+    assert_eq(v.checks_run, 3, 3);
+}
+
+test "SchemaValidator captures first failing field on range violation" {
+    v: SchemaValidator;
+    v.init();
+
+    v.check_required(1, 5);
+    v.check_range(2, 150, 0, 100);
+    v.check_required(3, 0);
+
+    assert_eq(v.is_valid, 0, 10);
+    assert_eq(v.error_code, schema_err_range(), 11);
+    assert_eq(v.failed_field, 2, 12);
+}
+
+test "parse_int_ascii strictly parses signed numbers and rejects garbage" {
+    // "-42" -> ASCII [45, 52, 50]
+    neg: u8[3];
+    neg[0] = 45;
+    neg[1] = 52;
+    neg[2] = 50;
+    val: int = 0;
+    assert_eq(parse_int_ascii(&neg[0], 3, &val), 1, 20);
+    assert_eq(val, -42, 21);
+
+    // "12a" -> ASCII [49, 50, 97] must fail strictly
+    bad: u8[3];
+    bad[0] = 49;
+    bad[1] = 50;
+    bad[2] = 97;
+    assert_eq(parse_int_ascii(&bad[0], 3, &val), 0, 22);
+}

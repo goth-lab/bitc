@@ -1,0 +1,140 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/schema.bc
+// Description: Zero-allocation contract validation and safe ASCII integer parsing for AI outputs.
+
+// MARK: - Schema Validation Error Constants
+
+/// @brief Validation succeeded; all contract rules passed.
+fn schema_ok() -> int { return 0; }
+
+/// @brief Error code: numeric field fell outside [min, max] bounds.
+fn schema_err_range() -> int { return 1; }
+
+/// @brief Error code: required field or pointer was zero/null.
+fn schema_err_required() -> int { return 2; }
+
+/// @brief Error code: hypervector failed minimum bit-density (popcount) check.
+fn schema_err_sparse() -> int { return 3; }
+
+// MARK: - Declarative Contract Validator
+
+/// @brief Accumulates field validation checks for structured AI outputs and sensor frames.
+/// @note Records the first failing field ID and error code without exceptions or heap allocations.
+struct SchemaValidator {
+    is_valid: int;
+    error_code: int;
+    failed_field: int;
+    checks_run: int;
+}
+
+/// @brief Initializes a SchemaValidator in a clean passing state.
+/// @param self Pointer to the SchemaValidator instance.
+fn (self: *SchemaValidator) init() {
+    self.is_valid = 1;
+    self.error_code = 0;
+    self.failed_field = -1;
+    self.checks_run = 0;
+}
+
+/// @brief Validates that `val` lies within the inclusive integer range [min_val, max_val].
+/// @param self Pointer to the SchemaValidator instance.
+/// @param field_id Numeric identifier of the validated struct field.
+/// @param val Actual integer field value.
+/// @param min_val Inclusive lower bound.
+/// @param max_val Inclusive upper bound.
+fn (self: *SchemaValidator) check_range(field_id: int, val: int, min_val: int, max_val: int) {
+    self.checks_run = self.checks_run + 1;
+    if self.is_valid == 0 {
+        return;
+    }
+    if val < min_val {
+        self.is_valid = 0;
+        self.error_code = schema_err_range();
+        self.failed_field = field_id;
+        return;
+    }
+    if val > max_val {
+        self.is_valid = 0;
+        self.error_code = schema_err_range();
+        self.failed_field = field_id;
+    }
+}
+
+/// @brief Validates that a required integer or handle field is non-zero.
+/// @param self Pointer to the SchemaValidator instance.
+/// @param field_id Numeric identifier of the validated struct field.
+/// @param val Field value to verify.
+fn (self: *SchemaValidator) check_required(field_id: int, val: int) {
+    self.checks_run = self.checks_run + 1;
+    if self.is_valid == 0 {
+        return;
+    }
+    if val == 0 {
+        self.is_valid = 0;
+        self.error_code = schema_err_required();
+        self.failed_field = field_id;
+    }
+}
+
+/// @brief Validates that a 256-bit hypervector contains at least `min_ones` set bits.
+/// @param self Pointer to the SchemaValidator instance.
+/// @param field_id Numeric identifier of the hypervector field.
+/// @param vec 256-bit hypervector to inspect.
+/// @param min_ones Minimum required Hamming weight.
+fn (self: *SchemaValidator) check_density256(field_id: int, vec: bvec<256>, min_ones: int) {
+    self.checks_run = self.checks_run + 1;
+    if self.is_valid == 0 {
+        return;
+    }
+    if count(vec) < min_ones {
+        self.is_valid = 0;
+        self.error_code = schema_err_sparse();
+        self.failed_field = field_id;
+    }
+}
+
+// MARK: - Safe ASCII Integer Parser (Replaces Unsafe C atoi)
+
+/// @brief Strictly parses a signed base-10 integer from an ASCII byte buffer.
+/// @param buf Pointer to ASCII character bytes (e.g., from ByteStream or JSON token).
+/// @param len Number of bytes in `buf` (must be > 0).
+/// @param out Destination pointer receiving the parsed 64-bit integer.
+/// @return 1 on strict valid parse, 0 if empty or contains non-digit characters.
+fn parse_int_ascii(buf: *u8, len: int, out: *int) -> int {
+    if buf == 0 {
+        return 0;
+    }
+    if len <= 0 {
+        return 0;
+    }
+    idx: int = 0;
+    sign: int = 1;
+    if buf[0] == 45 {
+        // ASCII '-' (45)
+        sign = -1;
+        idx = 1;
+    } else {
+        if buf[0] == 43 {
+            // ASCII '+' (43)
+            idx = 1;
+        }
+    }
+    if idx >= len {
+        return 0;
+    }
+    acc: int = 0;
+    for i in idx..len {
+        ch: int = buf[i];
+        if ch < 48 {
+            return 0;
+        }
+        if ch > 57 {
+            return 0;
+        }
+        acc = acc * 10 + (ch - 48);
+    }
+    *out = acc * sign;
+    return 1;
+}
