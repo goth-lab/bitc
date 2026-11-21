@@ -1,0 +1,65 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/reasoning.bc
+// Description: Self-consistency consensus voting and hypervector majority bundling.
+
+// MARK: - Self-Consistency Consensus Primitives
+
+/// @brief Finds a strict majority (> count / 2) winner among `count` integer candidate answers.
+/// @param candidates Pointer to array of integer candidate decisions.
+/// @param count Number of candidate runs.
+/// @param out_winner Destination pointer receiving the winning value.
+/// @return Vote count of the strict majority winner, or 0 if no strict majority exists.
+fn vote_majority_int(candidates: *int, count: int, out_winner: *int) -> int {
+    if candidates == 0 {
+        return 0;
+    }
+    if count <= 0 {
+        return 0;
+    }
+    threshold: int = count / 2;
+    for i in 0..count {
+        cand: int = candidates[i];
+        votes: int = 0;
+        for j in 0..count {
+            if candidates[j] == cand {
+                votes = votes + 1;
+            }
+        }
+        if votes > threshold {
+            *out_winner = cand;
+            return votes;
+        }
+    }
+    return 0;
+}
+
+/// @brief Combines `count` 256-bit hypervectors into a denoised consensus vector via bit-wise majority.
+/// @param vectors Pointer to array of 256-bit hypervectors.
+/// @param count Number of input hypervectors.
+/// @return Bundled 256-bit hypervector (each bit set to 1 if > count/2 inputs have 1 at that position).
+fn bundle_bvec256(vectors: *bvec<256>, count: int) -> bvec<256> {
+    out: bvec<256>;
+    if vectors == 0 {
+        return out;
+    }
+    if count <= 0 {
+        return out;
+    }
+    threshold: int = count / 2;
+    for b in 0..256 {
+        ones: int = 0;
+        for k in 0..count {
+            if vectors[k][b] != 0 {
+                ones = ones + 1;
+            }
+        }
+        if ones > threshold {
+            out[b] = 1;
+        } else {
+            out[b] = 0;
+        }
+    }
+    return out;
+}

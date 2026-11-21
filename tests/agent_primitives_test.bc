@@ -1,0 +1,55 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/agent_primitives_test.bc
+// Description: Unit tests for std/tools.bc and std/reasoning.bc.
+
+import "../std/test.bc";
+import "../std/sys.bc";
+import "../std/tools.bc";
+import "../std/reasoning.bc";
+
+// MARK: - Unit Tests for std/tools and std/reasoning
+
+test "ToolRegistry enforces permission clearance levels" {
+    reg: ToolRegistry<4>;
+    reg.init(perm_read_only());
+
+    reg.register_tool(10, perm_read_only());
+    reg.register_tool(20, perm_actuator());
+
+    assert_eq(reg.authorize(10), 1, 1);
+    assert_eq(reg.authorize(20), 0, 2);
+    assert_eq(reg.approved_calls, 1, 3);
+    assert_eq(reg.denied_calls, 1, 4);
+}
+
+test "vote_majority_int and bundle_bvec256 consensus" {
+    i0: int = 0;
+    i1: int = 1;
+    i2: int = 2;
+    i3: int = 3;
+    i4: int = 4;
+
+    cands: int[5];
+    cands[i0] = 7;
+    cands[i1] = 3;
+    cands[i2] = 7;
+    cands[i3] = 9;
+    cands[i4] = 7;
+
+    winner: int = 0;
+    votes: int = vote_majority_int(&cands[i0], 5, &winner);
+    assert_eq(votes, 3, 10);
+    assert_eq(winner, 7, 11);
+
+    // Bundle 3 noisy copies of base hypervector
+    base: bvec<256> = rand_mask256();
+    vecs: bvec<256>[3];
+    vecs[i0] = base;
+    vecs[i1] = base;
+    vecs[i2] = ~base;
+
+    denoised: bvec<256> = bundle_bvec256(&vecs[i0], 3);
+    assert_eq(count(match(denoised, base)), 256, 12);
+}

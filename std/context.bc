@@ -1,0 +1,127 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/context.bc
+// Description: Token-budgeted context window with system-prompt preservation and HDC recall.
+
+// MARK: - Message Role Constants
+
+/// @brief System instruction role (pinned against eviction).
+fn role_system() -> int { return 0; }
+
+/// @brief External user or sensor event role.
+fn role_user() -> int { return 1; }
+
+/// @brief AI assistant response role.
+fn role_assistant() -> int { return 2; }
+
+/// @brief Tool or actuator execution result role.
+fn role_tool() -> int { return 3; }
+
+// MARK: - ContextTurn and Token-Budgeted ContextWindow<MaxTurns>
+
+/// @brief Single context entry carrying role, token cost, payload ID, and 256-bit signature.
+struct ContextTurn {
+    role: int;
+    tokens: int;
+    payload_id: int;
+    signature: bvec<256>;
+}
+
+/// @brief Fixed-capacity context memory enforcing a strict token budget.
+/// @tparam MaxTurns Maximum number of stored turns.
+/// @note Automatically evicts oldest non-system turns when token or slot budget is exceeded.
+struct ContextWindow<MaxTurns> {
+    turns: ContextTurn[MaxTurns];
+    count: int;
+    used_tokens: int;
+    max_tokens: int;
+    evicted_total: int;
+}
+
+/// @brief Initializes a ContextWindow with a hard token budget.
+/// @param self Pointer to the ContextWindow instance.
+/// @param max_tokens Maximum cumulative tokens permitted in the window.
+fn (self: *ContextWindow<MaxTurns>) init(max_tokens: int) {
+    self.count = 0;
+    self.used_tokens = 0;
+    self.max_tokens = max_tokens;
+    self.evicted_total = 0;
+}
+
+/// @brief Evicts the oldest non-system turn to reclaim slots and tokens.
+/// @param self Pointer to the ContextWindow instance.
+/// @return 1 if a turn was evicted, 0 if no evictable turn exists.
+fn (self: *ContextWindow<MaxTurns>) evict_oldest_non_system() -> int {
+    victim: int = -1;
+    for i in 0..self.count {
+        if self.turns[i].role != 0 {
+            victim = i;
+            // Stop at the earliest non-system turn by scanning backwards or breaking
+            i = self.count;
+        }
+    }
+    if victim < 0 {
+        return 0;
+    }
+    self.used_tokens = self.used_tokens - self.turns[victim].tokens;
+    for j in victim..(self.count - 1) {
+        self.turns[j] = self.turns[j + 1];
+    }
+    self.count = self.count - 1;
+    self.evicted_total = self.evicted_total + 1;
+    return 1;
+}
+
+/// @brief Appends a new turn, evicting oldest non-system turns until within token budget.
+/// @param self Pointer to the ContextWindow instance.
+/// @param role Message role constant (0=SYSTEM, 1=USER, 2=ASSISTANT, 3=TOOL).
+/// @param tokens Token cost of this turn.
+/// @param payload_id Application-defined message or buffer ID.
+/// @param sig 256-bit semantic hypervector signature of the turn.
+/// @return 1 on success, 0 if the single turn exceeds `max_tokens` even after eviction.
+fn (self: *ContextWindow<MaxTurns>) push(role: int, tokens: int, payload_id: int, sig: bvec<256>) -> int {
+    if tokens > self.max_tokens {
+        return 0;
+    }
+    for attempt in 0..(MaxTurns + 1) {
+        need_evict: int = 0;
+        if self.count >= MaxTurns {
+            need_evict = 1;
+        }
+        if self.used_tokens + tokens > self.max_tokens {
+            need_evict = 1;
+        }
+        if need_evict == 0 {
+            idx: int = self.count;
+            self.turns[idx].role = role;
+            self.turns[idx].tokens = tokens;
+            self.turns[idx].payload_id = payload_id;
+            self.turns[idx].signature = sig;
+            self.count = self.count + 1;
+            self.used_tokens = self.used_tokens + tokens;
+            return 1;
+        }
+        if self.evict_oldest_non_system() == 0 {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+/// @brief Recalls the `payload_id` of the turn whose 256-bit signature best matches `query`.
+/// @param self Pointer to the ContextWindow instance.
+/// @param query 256-bit query hypervector.
+/// @return Best matching `payload_id`, or -1 if the window is empty.
+fn (self: *ContextWindow<MaxTurns>) recall_best(query: bvec<256>) -> int {
+    best_id: int = -1;
+    best_score: int = -1;
+    for i in 0..self.count {
+        score: int = count(match(query, self.turns[i].signature));
+        if score > best_score {
+            best_score = score;
+            best_id = self.turns[i].payload_id;
+        }
+    }
+    return best_id;
+}

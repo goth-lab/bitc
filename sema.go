@@ -495,7 +495,10 @@ func (ctx *SemaContext) inferExpr(e Expr, scope map[string]TypeExpr) (TypeExpr, 
 		if _, err := ctx.inferExpr(ex.Index, scope); err != nil {
 			return res, err
 		}
-		if ot.ArraySize != "" {
+		if ot.IsPointer {
+			ot.IsPointer = false
+			res = ot
+		} else if ot.ArraySize != "" {
 			ot.ArraySize = ""
 			res = ot
 		} else if ot.Name == "bvec" {

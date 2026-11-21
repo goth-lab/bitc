@@ -1,0 +1,36 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/context_test.bc
+// Description: Unit tests for std/context.bc token budget eviction and HDC recall.
+
+import "../std/test.bc";
+import "../std/sys.bc";
+import "../std/context.bc";
+
+// MARK: - Unit Tests for std/context
+
+test "ContextWindow preserves SYSTEM prompt while evicting oldest user turns" {
+    ctx: ContextWindow<4>;
+    ctx.init(100);
+
+    s_sys: bvec<256> = rand_mask256();
+    s_u1: bvec<256> = rand_mask256();
+    s_u2: bvec<256> = rand_mask256();
+    s_u3: bvec<256> = rand_mask256();
+
+    // System prompt takes 40 tokens, u1 takes 35, u2 takes 35 -> total 110 > 100 -> u1 evicted!
+    assert_eq(ctx.push(role_system(), 40, 1000, s_sys), 1, 1);
+    assert_eq(ctx.push(role_user(), 35, 1001, s_u1), 1, 2);
+    assert_eq(ctx.push(role_user(), 35, 1002, s_u2), 1, 3);
+
+    assert_eq(ctx.evicted_total, 1, 4);
+    assert_eq(ctx.used_tokens, 75, 5);
+    idx0: int = 0;
+    assert_eq(ctx.turns[idx0].payload_id, 1000, 6);
+
+
+    // Push u3 (25 tokens) -> 75 + 25 = 100 fits exactly without further eviction
+    assert_eq(ctx.push(role_user(), 25, 1003, s_u3), 1, 7);
+    assert_eq(ctx.recall_best(s_u2), 1002, 8);
+}

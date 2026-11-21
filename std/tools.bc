@@ -1,0 +1,85 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/tools.bc
+// Description: Permission-enforced tool and hardware actuator registry for AI agents.
+
+// MARK: - Tool Permission Levels
+
+/// @brief Read-only sensor or query tool (safe in all modes).
+fn perm_read_only() -> int { return 1; }
+
+/// @brief Physical actuator or motor control tool (requires elevated clearance).
+fn perm_actuator() -> int { return 2; }
+
+/// @brief External network or cloud API call tool.
+fn perm_network() -> int { return 3; }
+
+// MARK: - ToolRegistry<MaxTools>
+
+/// @brief Metadata descriptor for a registered tool or actuator.
+struct ToolDescriptor {
+    tool_id: int;
+    required_perm: int;
+    enabled: int;
+}
+
+/// @brief Static capability-checked tool registry for safe agent execution.
+/// @tparam MaxTools Maximum number of registered tools.
+struct ToolRegistry<MaxTools> {
+    tools: ToolDescriptor[MaxTools];
+    count: int;
+    max_clearance: int;
+    approved_calls: int;
+    denied_calls: int;
+}
+
+/// @brief Initializes the registry with a maximum allowed permission clearance.
+/// @param self Pointer to the ToolRegistry instance.
+/// @param max_clearance Highest permission level permitted (1=ReadOnly, 2=Actuator, 3=Network).
+fn (self: *ToolRegistry<MaxTools>) init(max_clearance: int) {
+    self.count = 0;
+    self.max_clearance = max_clearance;
+    self.approved_calls = 0;
+    self.denied_calls = 0;
+}
+
+/// @brief Registers a tool with its required permission level.
+/// @param self Pointer to the ToolRegistry instance.
+/// @param tool_id Unique numeric tool identifier.
+/// @param required_perm Minimum clearance required to invoke this tool.
+/// @return 1 on success, 0 if registry capacity MaxTools is full.
+fn (self: *ToolRegistry<MaxTools>) register_tool(tool_id: int, required_perm: int) -> int {
+    if self.count >= MaxTools {
+        return 0;
+    }
+    idx: int = self.count;
+    self.tools[idx].tool_id = tool_id;
+    self.tools[idx].required_perm = required_perm;
+    self.tools[idx].enabled = 1;
+    self.count = self.count + 1;
+    return 1;
+}
+
+/// @brief Authorizes whether `tool_id` may execute under current clearance and enabled flags.
+/// @param self Pointer to the ToolRegistry instance.
+/// @param tool_id Requested tool identifier.
+/// @return 1 if authorized, 0 if unknown, disabled, or exceeds `max_clearance`.
+fn (self: *ToolRegistry<MaxTools>) authorize(tool_id: int) -> int {
+    for i in 0..self.count {
+        if self.tools[i].tool_id == tool_id {
+            if self.tools[i].enabled == 0 {
+                self.denied_calls = self.denied_calls + 1;
+                return 0;
+            }
+            if self.tools[i].required_perm > self.max_clearance {
+                self.denied_calls = self.denied_calls + 1;
+                return 0;
+            }
+            self.approved_calls = self.approved_calls + 1;
+            return 1;
+        }
+    }
+    self.denied_calls = self.denied_calls + 1;
+    return 0;
+}

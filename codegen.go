@@ -179,7 +179,7 @@ func (g *CodeGenerator) emitStmts(stmts []Stmt, indent string) {
 			// Support single-bit mutation on bvec<N> scalars (both <= 64 and > 64 bits).
 			if idxEx, ok := st.Target.(*IndexExpr); ok {
 				objType := g.ctx.ExprTypes[idxEx.Obj]
-				if objType.ArraySize == "" && objType.Name == "bvec" {
+				if !objType.IsPointer && objType.ArraySize == "" && objType.Name == "bvec" {
 					w := getBitWidth(objType)
 					vecStr := g.emitExpr(idxEx.Obj, indent)
 					idxStr := g.emitExpr(idxEx.Index, indent)
@@ -299,8 +299,8 @@ func (g *CodeGenerator) emitExpr(e Expr, indent string) string {
 		objType := g.ctx.ExprTypes[ex.Obj]
 		objStr := g.emitExpr(ex.Obj, indent)
 		idxStr := g.emitExpr(ex.Index, indent)
-		// Support single-bit reads on both scalar (<= 64) and wide (> 64) bvec<N>.
-		if objType.ArraySize == "" && objType.Name == "bvec" {
+		// Support single-bit reads on scalar/wide bvec<N> values (not arrays or pointers).
+		if !objType.IsPointer && objType.ArraySize == "" && objType.Name == "bvec" {
 			if getBitWidth(objType) <= 64 {
 				return fmt.Sprintf("((%s >> (%s)) & 1ULL)", objStr, idxStr)
 			}
