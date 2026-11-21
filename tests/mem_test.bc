@@ -1,0 +1,64 @@
+import "../std/test.bc";
+import "../std/mem.bc";
+
+// MARK: - Unit Tests for std/mem
+
+test "RingBuffer strict push, pop, wrap-around, and full rejection" {
+    rb: RingBuffer<int, 3>;
+    assert_eq(rb.len(), 0, 1);
+
+    assert_eq(rb.push(10), 1, 2);
+    assert_eq(rb.push(20), 1, 3);
+    assert_eq(rb.push(30), 1, 4);
+    assert_eq(rb.is_full(), 1, 5);
+    assert_eq(rb.push(40), 0, 6);
+
+    val: int = 0;
+    assert_eq(rb.pop(&val), 1, 7);
+    assert_eq(val, 10, 8);
+
+    // Wrap-around push after freeing one slot
+    assert_eq(rb.push(40), 1, 9);
+    assert_eq(rb.pop(&val), 1, 10);
+    assert_eq(val, 20, 11);
+    assert_eq(rb.pop(&val), 1, 12);
+    assert_eq(val, 30, 13);
+    assert_eq(rb.pop(&val), 1, 14);
+    assert_eq(val, 40, 15);
+    assert_eq(rb.pop(&val), 0, 16);
+}
+
+test "RingBuffer push_overwrite drops oldest sample on overflow" {
+    audio_rb: RingBuffer<i16, 2>;
+    audio_rb.push_overwrite(100);
+    audio_rb.push_overwrite(200);
+    audio_rb.push_overwrite(300);
+
+    sample: i16 = 0;
+    assert_eq(audio_rb.len(), 2, 20);
+    assert_eq(audio_rb.pop(&sample), 1, 21);
+    assert_eq(sample, 200, 22);
+    assert_eq(audio_rb.pop(&sample), 1, 23);
+    assert_eq(sample, 300, 24);
+}
+
+test "ByteArena 8-byte aligned allocation, OOM check, and O(1) reset" {
+    arena: ByteArena<64>;
+    p1: *u8 = arena.alloc(5);
+    assert_true(p1 != 0, 30);
+    assert_eq(arena.used(), 5, 31);
+
+    // Next allocation must align offset to 8 -> 8 + 16 = 24
+    p2: *u8 = arena.alloc(16);
+    assert_true(p2 != 0, 32);
+    assert_eq(arena.used(), 24, 33);
+
+    // Request exceeding remaining 40 bytes must return null (0)
+    p3: *u8 = arena.alloc(48);
+    assert_true(p3 == 0, 34);
+
+    arena.reset();
+    assert_eq(arena.used(), 0, 35);
+    p4: *u8 = arena.alloc(64);
+    assert_true(p4 != 0, 36);
+}

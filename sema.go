@@ -255,6 +255,9 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 // substituteType replaces template parameter names inside a TypeExpr with concrete values.
 func substituteType(t TypeExpr, subst map[string]string) TypeExpr {
 	res := t
+	if val, ok := subst[res.Name]; ok {
+		res.Name = val
+	}
 	if val, ok := subst[res.ArraySize]; ok {
 		res.ArraySize = val
 	}
@@ -431,9 +434,10 @@ func (ctx *SemaContext) inferExpr(e Expr, scope map[string]TypeExpr) (TypeExpr, 
 		if err != nil {
 			return res, err
 		}
-		if ex.Op == "*" {
+		switch ex.Op {
+		case "*":
 			rt.IsPointer = false
-		} else if ex.Op == "&" {
+		case "&":
 			rt.IsPointer = true
 		}
 		res = rt

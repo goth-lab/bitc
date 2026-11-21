@@ -1,0 +1,110 @@
+// MARK: - Fixed-Capacity Ring Buffer (Zero Dynamic Allocation)
+
+/// @brief Lock-free single-producer/single-consumer style static ring buffer.
+/// @tparam T Element type (e.g., u8, i16, int).
+/// @tparam Cap Maximum number of elements stored in static memory.
+struct RingBuffer<T, Cap> {
+    buf: T[Cap];
+    head: int;
+    tail: int;
+    count: int;
+}
+
+/// @brief Returns the number of elements currently stored in the ring buffer.
+/// @param self Pointer to the RingBuffer instance.
+/// @return Current element count (0..Cap).
+fn (self: *RingBuffer<T, Cap>) len() -> int {
+    return self.count;
+}
+
+/// @brief Checks whether the ring buffer has reached full capacity.
+/// @param self Pointer to the RingBuffer instance.
+/// @return 1 if full, 0 otherwise.
+fn (self: *RingBuffer<T, Cap>) is_full() -> int {
+    if self.count >= Cap {
+        return 1;
+    }
+    return 0;
+}
+
+/// @brief Appends an item if space is available (backpressure: reject on full).
+/// @param self Pointer to the RingBuffer instance.
+/// @param item Element value to enqueue.
+/// @return 1 on success, 0 if the buffer is full.
+fn (self: *RingBuffer<T, Cap>) push(item: T) -> int {
+    if self.count >= Cap {
+        return 0;
+    }
+    self.buf[self.head] = item;
+    self.head = (self.head + 1) % Cap;
+    self.count = self.count + 1;
+    return 1;
+}
+
+/// @brief Appends an item, overwriting the oldest element when full (DropOldest).
+/// @param self Pointer to the RingBuffer instance.
+/// @param item Element value to enqueue.
+/// @note Ideal for real-time camera frames and continuous microphone PCM streams.
+fn (self: *RingBuffer<T, Cap>) push_overwrite(item: T) {
+    if self.count >= Cap {
+        self.tail = (self.tail + 1) % Cap;
+        self.count = self.count - 1;
+    }
+    self.buf[self.head] = item;
+    self.head = (self.head + 1) % Cap;
+    self.count = self.count + 1;
+}
+
+/// @brief Removes the oldest element from the ring buffer into `out`.
+/// @param self Pointer to the RingBuffer instance.
+/// @param out Destination pointer receiving the popped element.
+/// @return 1 on success, 0 if the buffer is empty.
+fn (self: *RingBuffer<T, Cap>) pop(out: *T) -> int {
+    if self.count <= 0 {
+        return 0;
+    }
+    *out = self.buf[self.tail];
+    self.tail = (self.tail + 1) % Cap;
+    self.count = self.count - 1;
+    return 1;
+}
+
+// MARK: - Deterministic Linear Arena Allocator
+
+/// @brief Fixed-buffer bump allocator with O(1) bulk reset and 8-byte alignment.
+/// @tparam Cap Total static byte capacity of the arena.
+/// @note Eliminates heap fragmentation on microcontrollers and edge devices.
+struct ByteArena<Cap> {
+    buf: u8[Cap];
+    offset: int;
+}
+
+/// @brief Allocates `size` bytes aligned to an 8-byte boundary from the arena.
+/// @param self Pointer to the ByteArena instance.
+/// @param size Requested number of bytes (> 0).
+/// @return Pointer to allocated memory block, or null (0) on out-of-memory.
+fn (self: *ByteArena<Cap>) alloc(size: int) -> *u8 {
+    if size <= 0 {
+        return 0;
+    }
+    aligned_off: int = (self.offset + 7) & (~7);
+    if aligned_off + size > Cap {
+        return 0;
+    }
+    ptr: *u8 = &self.buf[aligned_off];
+    self.offset = aligned_off + size;
+    return ptr;
+}
+
+/// @brief Returns the number of bytes currently consumed (including alignment padding).
+/// @param self Pointer to the ByteArena instance.
+/// @return Used byte offset.
+fn (self: *ByteArena<Cap>) used() -> int {
+    return self.offset;
+}
+
+/// @brief Resets the arena offset to zero in O(1) time without freeing individual blocks.
+/// @param self Pointer to the ByteArena instance.
+fn (self: *ByteArena<Cap>) reset() {
+    self.offset = 0;
+}
