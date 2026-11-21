@@ -8,44 +8,39 @@
 * **Стандарты кода и документации:**
   * Весь код (`*.go`, `*.bc`), комментарии, ошибки компилятора и C-код: **строго на английском языке**.
   * Проектная документация (`CONTEXT_SNAPSHOT.md`, `specs/SPECIFICATION.md`, `README.md`): на русском языке до этапа релиза.
-  * Ограничение в чате: каждый блок кода от AI — **строго до 75 строк** (осторожно с квадратными скобками в Markdown).
+  * Ограничение в чате: каждый блок кода от AI — **строго до 75 строк** (внимание на квадратные скобки в Markdown).
   * Разметка секций: `// MARK: - <Section Title>` во всех файлах.
   * Go (`*.go`): стандартный GoDoc + подробные строчные комментарии (`//`).
   * BIT-C (`*.bc`): Doxygen-блоки (`/// @brief`, `@param`, `@return`, `@note`).
 
-## 2. Актуальная архитектура и статус репозитория
-* **Ядро компилятора (переписано и очищено в v1.1):**
-  * `main.go` — CLI (`./bitc <file.bc>` и `./bitc test <file.bc>`), сборка через `clang -O3` с флагами нативного CPU (`-mcpu=native` / `-march=native`).
-  * `lexer.go` — токенизация, включая `TOK_TEST` (`test`).
-  * `ast.go` — узлы AST с поддержкой шаблонов, ресиверов `(self: *T)`, `parallel for`, `match`, `count`.
-  * `parser.go` — рекурсивный спуск + парсер Пратта, неразрушающий предпросмотр `isGenericCallAhead()` для `<` vs `<T>(`, снижение `test "name" { ... }` в `__bitc_test_<N>`.
-  * `sema.go` — резолвинг `import`, полная мономорфизация типов и констант в структурах/функциях (`substituteType`), поддержка тестового режима `AnalyzeProgram(prog, isTestMode)`.
-  * `codegen.go` — C-бэкенд: `bvec<N>` (`<=64` -> `uintN_t`, `>64` -> 32-байтно выровненный `bvecN_t`), побитовые чтение/запись для любой ширины `N`, `#pragma omp parallel for` перед циклом, маппинг `i8` (без `float`), хук `bitc_assert`.
-* **Стандартная библиотека (`std/`) и тесты (`tests/`):**
-  * `[Done]` `std/test.bc` (`assert_true`, `assert_eq`, `assert_neq`, `assert_popcount<N>`).
-  * `[Done]` `std/sys.bc` (`rand_mask`, `now_ns`, `save_raw`, `load_raw`, `rand_mask256`) + `tests/sys_test.bc`.
-  * `[Done]` `std/encode.bc` (`thermometer64`) + `tests/encode_test.bc`.
-  * `[Done]` `std/learn.bc` (`nudge<N>`) + `tests/learn_test.bc`.
-  * `[Done]` `std/mem.bc` (`RingBuffer<T, Cap>`, `ByteArena<Cap>`) + `tests/mem_test.bc`.
-  * `[In Progress]` `std/tensor.bc` (`TensorView1D<T>`, `TensorView2D<T>`, `quantize_i32_to_i8` Q16.16, `binarize_i8_to_bvec64`) + `tests/tensor_test.bc`.
+## 2. Актуальная архитектура компилятора (`v1.1`)
+* `main.go` — CLI (`./bitc <file.bc>` и `./bitc test <file.bc>`), сборка через `clang -O3` с флагами нативного CPU (`-mcpu=native` / `-march=native`).
+* `lexer.go` — токенизация, включая `TOK_TEST` (`test`) и контекстные идентификаторы (`in`, `step`).
+* `ast.go` — узлы AST с поддержкой шаблонов, ресиверов `(self: *T)`, `parallel for`, `match`, `count`.
+* `parser.go` — рекурсивный спуск + парсер Пратта, неразрушающий предпросмотр `isGenericCallAhead()`, поддержка вложенных шаблонов (`Channel<bvec<64>, 2>`), снижение `test "name" { ... }` в `__bitc_test_<N>`.
+* `sema.go` — резолвинг `import`, полная мономорфизация вложенных типов (`substituteType`, `MonoStructOrder`), ленивая инстанциация соседних методов структуры, проверка типов границ `ForStmt`, вывод типов индексации указателей `*T[i]` vs битов `bvec<N>[i]`.
+* `codegen.go` — C-бэкенд: `bvec<N>` (`<=64` -> `uintN_t`, `>64` -> 32-байтно выровненный `bvecN_t`), побитовые чтение/запись для любой ширины `N`, топологический порядок структур `MonoStructOrder`, `#pragma omp parallel for` перед циклом, маппинг `i8` (без `float`), хук `bitc_assert`.
 
-## 3. Дорожная карта (Roadmap)
-* **Этап 1 (Завершен):** Аудит ядра и утверждение спецификации `specs/SPECIFICATION.md`.
-* **Этап 2.0 (Завершен):** Рефакторинг компилятора, фикс широких `bvec<N>` и OpenMP, внедрение `./bitc test`, `std/test.bc` и вынос тестов в `tests/`.
-* **Этап 2.1 (Текущий — Уровень 1 Core):**
-  * [x] `std/mem.bc` + `tests/mem_test.bc`
-  * [~] `std/tensor.bc` + `tests/tensor_test.bc` (дописать проверку сборки + закоммитить)
-  * [ ] `std/stream.bc` (потоковые каналы `Channel<T, Cap>` с backpressure) + тесты
-  * [ ] `std/io.bc` (унифицированные интерфейсы `Reader`/`Writer`, файлы, UART/I2C/GPIO) + тесты
-* **Этап 2.2 (Уровень 4 — Когнитивный слой и агенты):**
-  * [ ] `std/schema.bc` (валидация и парсинг структурированного вывода без исключений)
-  * [ ] `std/flow.bc` (конечные автоматы `StateMachine` и маршрутизация)
-  * [ ] `std/context.bc`, `std/tools.bc`, `std/reasoning.bc` (память, реестр инструментов, циклы самопроверки)
-* **Этап 3 (Уровни 2 и 3 — Сенсорика и локальный инференс):**
-  * [ ] `std/vision.bc`, `std/audio.bc`, `std/infer.bc`, `std/post.bc` (целочисленные БПФ/Mel, NMS, трекер, антидребезг)
-  * [ ] 3 эталонных проекта в `examples/` (Edge Vision, Edge Audio, Hybrid AI Agent) + пользовательская документация в `docs/`.
-* **Этап 4:** Публикация `v0.1-alpha` на GitHub с файлом `LICENSE` (MIT).
+## 3. Реализованная стандартная библиотека (`std/`) и тесты (`tests/`)
+Все 13 модулей `stdlib` написаны, документированы и покрыты юнит-тестами:
+1. `std/test.bc` — `assert_true`, `assert_eq`, `assert_neq`, `assert_popcount<N>`.
+2. `std/sys.bc` (`tests/sys_test.bc`) — `rand_mask`, `now_ns`, `save_raw`, `load_raw`, `rand_mask256`.
+3. `std/encode.bc` (`tests/encode_test.bc`) — `thermometer64`.
+4. `std/learn.bc` (`tests/learn_test.bc`) — стохастическое on-device обучение `nudge<N>`.
+5. `std/mem.bc` (`tests/mem_test.bc`) — `RingBuffer<T, Cap>` (`push`, `push_overwrite`, `pop`), `ByteArena<Cap>`.
+6. `std/tensor.bc` (`tests/tensor_test.bc`) — `TensorView1D<T>`, `TensorView2D<T>`, Q16.16 `quantize_i32_to_i8`, `binarize_i8_to_bvec64`.
+7. `std/stream.bc` (`tests/stream_test.bc`) — `Channel<T, Cap>` (политики `Reject`, `DropOldest`, `DropNewest`).
+8. `std/io.bc` (`tests/io_test.bc`) — `ByteStream<Cap>` (`write_bytes`, `read_bytes`), безопасный `GpioPin`.
+9. `std/flow.bc` (`tests/flow_test.bc`) — конечный автомат `StateMachine<MaxRules>`, гипервекторный маршрутизатор `IntentRouter256<MaxRoutes>`.
+10. `std/schema.bc` (`tests/schema_test.bc`) — валидатор контрактов `SchemaValidator`, строгий `parse_int_ascii`.
+11. `std/context.bc` (`tests/context_test.bc`) — `ContextWindow<MaxTurns>` с бюджетом токенов, защитой `SYSTEM` и HDC-поиском `recall_best`.
+12. `std/tools.bc` (`tests/agent_primitives_test.bc`) — реестр прав доступа `ToolRegistry<MaxTools>` (`ReadOnly`, `Actuator`, `Network`).
+13. `std/reasoning.bc` (`tests/agent_primitives_test.bc`) — `vote_majority_int`, `bundle_bvec256`.
+14. `std/vision.bc`, `std/audio.bc`, `std/post.bc` (`tests/edge_sensors_test.bc`) — `GrayImageView` (`crop`, `rgb888_to_gray`, `encode_grid_16x16_bvec256`), `AudioFrame16` (`audio_mean_abs`, `audio_vad`, `audio_zcr_q16`, `encode_audio_64`), `BBox` (`bbox_iou_q16`), `DebounceFilter`.
 
-## 4. Точка возобновления следующей сессии
-* **Сделано:** Написаны `std/tensor.bc` и `tests/tensor_test.bc`, добавлен `i8` в `codegen.go`.
-* **Следующий шаг:** Прогнать `./bitc test tests/tensor_test.bc`, закоммитить `std/tensor.bc`, и приступить к **`std/stream.bc`** и **`std/io.bc`**.
+## 4. Следующие шаги (Этап 3 и Этап 4)
+* **Этап 3 (Прикладные эталоны и документация):**
+  * [ ] Добавить поддержку пакетного запуска `./bitc test tests/` (прогон всей папки тестов одной командой).
+  * [ ] Написать 3 эталонных проекта в `examples/` (Edge Vision детектор, Edge Audio голосовой триггер, Hybrid AI Agent с `SchemaValidator` + `ToolRegistry` + `StateMachine`).
+  * [ ] Подготовить пользовательскую документацию в `docs/` (`LANGUAGE_GUIDE.md`, `STDLIB_REFERENCE.md`) и перевести `README.md` / `SPECIFICATION.md` на английский.
+* **Этап 4:** Релиз `v0.1-alpha` на GitHub и привлечение разработчиков.

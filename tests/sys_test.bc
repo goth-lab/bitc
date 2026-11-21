@@ -1,4 +1,4 @@
-import "test.bc";
+import "../std/test.bc";
 import "../std/sys.bc";
 
 // MARK: - Unit Tests for std/sys

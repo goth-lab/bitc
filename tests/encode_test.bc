@@ -1,4 +1,4 @@
-import "test.bc";
+import "../std/test.bc";
 import "../std/encode.bc";
 
 test "thermometer64 boundary and locality properties" {

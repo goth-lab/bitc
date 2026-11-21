@@ -234,11 +234,16 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 		return existing, nil
 	}
 
+	retType, err := ctx.instantiateStruct(substituteType(tmpl.ReturnType, subst))
+	if err != nil {
+		return nil, err
+	}
+
 	monoFn := &FnNode{
 		Line:       tmpl.Line,
 		IsExtern:   tmpl.IsExtern,
 		Name:       monoName,
-		ReturnType: substituteType(tmpl.ReturnType, subst),
+		ReturnType: retType,
 	}
 
 	scope := make(map[string]TypeExpr)

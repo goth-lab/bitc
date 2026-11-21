@@ -1,4 +1,4 @@
-import "test.bc";
+import "../std/test.bc";
 import "../std/learn.bc";
 
 // MARK: - Unit Tests for std/learn
