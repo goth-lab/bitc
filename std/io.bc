@@ -1,0 +1,144 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/io.bc
+// Description: Zero-allocation byte streams and hardware peripheral abstractions (UART/GPIO).
+
+import "mem.bc";
+
+// MARK: - I/O Status and Direction Constants
+
+/// @brief Operation completed without errors.
+fn io_ok() -> int { return 0; }
+
+/// @brief Error code returned when writing to an input-only pin or read-only stream.
+fn io_err_mode() -> int { return -3; }
+
+/// @brief Pin direction constant: digital input.
+fn gpio_dir_input() -> int { return 0; }
+
+/// @brief Pin direction constant: digital output.
+fn gpio_dir_output() -> int { return 1; }
+
+// MARK: - Buffered ByteStream<Cap> (UART / Sensor / Mock Transport)
+
+/// @brief Static byte-oriented FIFO stream for serial transports, sensor frames, and mocks.
+/// @tparam Cap Static byte buffer capacity.
+struct ByteStream<Cap> {
+    ring: RingBuffer<u8, Cap>;
+    bytes_written: int;
+    bytes_read: int;
+}
+
+/// @brief Writes a single byte into the stream if capacity permits.
+/// @param self Pointer to the ByteStream instance.
+/// @param b Byte value to write.
+/// @return 1 on success, 0 if the stream buffer is full.
+fn (self: *ByteStream<Cap>) write_byte(b: u8) -> int {
+    ok: int = self.ring.push(b);
+    if ok != 0 {
+        self.bytes_written = self.bytes_written + 1;
+    }
+    return ok;
+}
+
+/// @brief Reads a single byte from the stream into `out`.
+/// @param self Pointer to the ByteStream instance.
+/// @param out Destination pointer receiving the read byte.
+/// @return 1 on success, 0 if the stream is empty.
+fn (self: *ByteStream<Cap>) read_byte(out: *u8) -> int {
+    ok: int = self.ring.pop(out);
+    if ok != 0 {
+        self.bytes_read = self.bytes_read + 1;
+    }
+    return ok;
+}
+
+/// @brief Writes up to `len` bytes from `src` into the stream.
+/// @param self Pointer to the ByteStream instance.
+/// @param src Pointer to the source byte array.
+/// @param len Number of bytes requested to write.
+/// @return Actual number of bytes written before buffer full.
+fn (self: *ByteStream<Cap>) write_bytes(src: *u8, len: int) -> int {
+    written: int = 0;
+    for i in 0..len {
+        if self.write_byte(src[i]) == 0 {
+            return written;
+        }
+        written = written + 1;
+    }
+    return written;
+}
+
+/// @brief Reads up to `max_len` bytes from the stream into `dst`.
+/// @param self Pointer to the ByteStream instance.
+/// @param dst Destination buffer pointer.
+/// @param max_len Maximum number of bytes to read.
+/// @return Actual number of bytes read.
+fn (self: *ByteStream<Cap>) read_bytes(dst: *u8, max_len: int) -> int {
+    read_cnt: int = 0;
+    for i in 0..max_len {
+        b: u8 = 0;
+        if self.read_byte(&b) == 0 {
+            return read_cnt;
+        }
+        dst[i] = b;
+        read_cnt = read_cnt + 1;
+    }
+    return read_cnt;
+}
+
+/// @brief Returns the number of unread bytes currently buffered in the stream.
+/// @param self Pointer to the ByteStream instance.
+/// @return Available byte count.
+fn (self: *ByteStream<Cap>) available() -> int {
+    return self.ring.len();
+}
+
+// MARK: - Digital GPIO Pin Abstraction
+
+/// @brief Safe digital GPIO pin state controller with direction enforcement.
+/// @note Prevents accidental writes to input-configured pins on embedded hardware.
+struct GpioPin {
+    pin_id: int;
+    dir: int;
+    level: u8;
+    toggles: int;
+}
+
+/// @brief Configures a GPIO pin with an identifier and direction (0=INPUT, 1=OUTPUT).
+/// @param self Pointer to the GpioPin instance.
+/// @param pin_id Hardware pin number.
+/// @param dir Direction constant (gpio_dir_input() or gpio_dir_output()).
+fn (self: *GpioPin) init(pin_id: int, dir: int) {
+    self.pin_id = pin_id;
+    self.dir = dir;
+    self.level = 0;
+    self.toggles = 0;
+}
+
+/// @brief Sets the digital output level (0 or 1) if the pin is configured as OUTPUT.
+/// @param self Pointer to the GpioPin instance.
+/// @param val Desired logic level (non-zero becomes 1, zero becomes 0).
+/// @return io_ok() (0) on success, or io_err_mode() (-3) if configured as INPUT.
+fn (self: *GpioPin) write(val: u8) -> int {
+    if self.dir != 1 {
+        return io_err_mode();
+    }
+    norm: u8 = 0;
+    if val != 0 {
+        norm = 1;
+    }
+    if self.level != norm {
+        self.level = norm;
+        self.toggles = self.toggles + 1;
+    }
+    return io_ok();
+}
+
+/// @brief Reads the current logic level of the pin (0 or 1).
+/// @param self Pointer to the GpioPin instance.
+/// @return Current logic level.
+fn (self: *GpioPin) read() -> u8 {
+    return self.level;
+}

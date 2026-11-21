@@ -1,0 +1,48 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/io_test.bc
+// Description: Unit tests for std/io.bc (ByteStream packet I/O and GpioPin direction safety).
+
+import "../std/test.bc";
+import "../std/io.bc";
+
+// MARK: - Unit Tests for std/io
+
+test "ByteStream bulk write_bytes and read_bytes packet framing" {
+    uart: ByteStream<8>;
+    tx: u8[4];
+    tx[0] = 0xAA;
+    tx[1] = 0x55;
+    tx[2] = 0x01;
+    tx[3] = 0xFF;
+
+    written: int = uart.write_bytes(&tx[0], 4);
+    assert_eq(written, 4, 1);
+    assert_eq(uart.available(), 4, 2);
+
+    rx: u8[4];
+    got: int = uart.read_bytes(&rx[0], 4);
+    assert_eq(got, 4, 3);
+    assert_eq(rx[0], 0xAA, 4);
+    assert_eq(rx[3], 0xFF, 5);
+    assert_eq(uart.available(), 0, 6);
+}
+
+test "GpioPin enforces output direction and tracks toggles" {
+    relay: GpioPin;
+    relay.init(13, gpio_dir_input());
+
+    // Writing to an INPUT pin must fail with io_err_mode() (-3)
+    assert_eq(relay.write(1), io_err_mode(), 10);
+    assert_eq(relay.read(), 0, 11);
+
+    // Reconfigure as OUTPUT and toggle twice
+    relay.init(13, gpio_dir_output());
+    assert_eq(relay.write(1), io_ok(), 12);
+    assert_eq(relay.read(), 1, 13);
+    assert_eq(relay.write(1), io_ok(), 14);
+    assert_eq(relay.toggles, 1, 15);
+    assert_eq(relay.write(0), io_ok(), 16);
+    assert_eq(relay.toggles, 2, 17);
+}

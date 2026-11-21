@@ -589,6 +589,28 @@ func (ctx *SemaContext) resolveCall(call *CallExpr, scope map[string]TypeExpr) (
 		methodName := objType.Name + "_" + fieldEx.Field
 		monoFn, ok := ctx.MonoFuncs[methodName]
 		if !ok {
+			// Lazily instantiate method if sibling method called it before map iteration reached it.
+			for _, tmpl := range ctx.FuncTemplates {
+				if tmpl.Receiver != nil && tmpl.Name == fieldEx.Field &&
+					strings.HasPrefix(objType.Name, tmpl.Receiver.Type.Name) {
+					subst := make(map[string]string)
+					if len(tmpl.Receiver.Type.TypeParams) > 0 {
+						parts := strings.Split(strings.TrimPrefix(objType.Name, tmpl.Receiver.Type.Name+"_"), "_")
+						for i, tp := range tmpl.Receiver.Type.TypeParams {
+							if i < len(parts) {
+								subst[tp] = parts[i]
+							}
+						}
+					}
+					if inst, err := ctx.instantiateFunc(tmpl, subst); err == nil && inst.Name == methodName {
+						monoFn = inst
+						ok = true
+						break
+					}
+				}
+			}
+		}
+		if !ok {
 			return TypeExpr{}, fmt.Errorf("[Line %d] type '%s' has no method '%s'", call.Line, objType.Name, fieldEx.Field)
 		}
 		ctx.ResolvedCalls[call] = monoFn.Name
