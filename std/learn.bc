@@ -1,0 +1,11 @@
+// @file std/learn.bc
+// @brief Стандартная библиотека алгоритмов дискретного обучения BIT-C.
+
+// Стохастическая коррекция весов без вещественной математики
+fn nudge<N>(weight: *bvec<N>, input: bvec<N>, wantFire: bit, mask: bvec<N>) {
+    if wantFire == 1 {
+        *weight = *weight ^ ((*weight ^ input) & mask);
+    } else {
+        *weight = *weight ^ (~(*weight ^ input) & mask);
+    }
+}

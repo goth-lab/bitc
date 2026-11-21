@@ -1,0 +1,66 @@
+// ============================================================================
+// ПРИМЕР 1: Учим программу узнавать образы и сохранять память на диск
+// ============================================================================
+// ЗАДАЧА ИЗ ЖИЗНИ:
+// Датчик присылает 64-битные сигналы двух типов (Сигнал А и Сигнал Б).
+// Нам нужно научить нейросеть безошибочно отличать их друг от друга,
+// замерить скорость работы и сохранить обученную память в файл, чтобы
+// при следующем запуске программа уже «знала» ответ без повторного обучения.
+// ============================================================================
+
+import "../std/learn.bc";
+import "../std/sys.bc";
+
+struct Dense<InBits, OutBits> {
+    weights: bvec<InBits>[OutBits];
+    threshold: int;
+}
+
+fn (d: *Dense<InBits, OutBits>) forward(in: bvec<InBits>) -> bvec<OutBits> {
+    out: bvec<OutBits> = 0;
+    for i in 0..OutBits {
+        out[i] = count(match(in, d.weights[i])) > d.threshold;
+    }
+    return out;
+}
+
+fn (d: *Dense<InBits, OutBits>) train(in: bvec<InBits>, target: bvec<OutBits>) {
+    for i in 0..OutBits {
+        nudge<InBits>(&d.weights[i], in, target[i], rand_mask());
+    }
+}
+
+fn main() {
+    layer: Dense<64, 4>;
+    layer.threshold = 42;
+
+    patA: bvec<64> = 0xAAAAAAAAAAAAAAAA;
+    patB: bvec<64> = 0x5555555555555555;
+
+    // 1. Обучаем сеть с живой стохастической маской
+    for epoch in 0..60 {
+        layer.train(patA, 0x9);
+        layer.train(patB, 0x6);
+    }
+
+    // 2. Замеряем скорость инференса через библиотечный таймер now_ns()
+    t0: int = now_ns();
+    resA: bvec<4> = layer.forward(patA);
+    resB: bvec<4> = layer.forward(patB);
+    t1: int = now_ns();
+
+    print resA;
+    print resB;
+    print (t1 - t0);
+
+    // 3. Сохраняем обученные веса (4 * 8 = 32 байта) на диск в слот 1
+    save_raw(1, &layer.weights, 32);
+
+    // 4. Создаем совершенно новый пустой слой и загружаем в него память с диска!
+    clone: Dense<64, 4>;
+    clone.threshold = 42;
+    load_raw(1, &clone.weights, 32);
+
+    print clone.forward(patA);
+    print clone.forward(patB);
+}

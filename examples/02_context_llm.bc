@@ -1,0 +1,86 @@
+// ============================================================================
+// ПРИМЕР 2: Мини-языковая модель (Bit-RNN) — учим программу продолжать фразы
+// ============================================================================
+// ЗАДАЧА ИЗ ЖИЗНИ:
+// Как нейросеть понимает порядок слов, если у нее нет гигабайтов памяти?
+// Мы кодируем каждое слово случайным 64-битным «отпечатком пальца».
+// Когда приходит новое слово, мы сдвигаем старую память вправо (>>)
+// и смешиваем ее с новым словом через XOR (^). Получается уникальный слепок
+// всей фразы целиком! На нем сеть учится продолжать: «Кот -> сел -> на -> коврик».
+// ============================================================================
+
+// @file examples/02_context_llm.bc
+// @brief Пример 2: Компактная рекуррентная языковая модель (Bit-RNN) на BIT-C v1.0.
+// @details Демонстрирует работу с контекстной памятью во времени через сдвиги и XOR.
+// Модель запоминает последовательность ("Кот" -> "сел" -> "на") и предсказывает "коврик".
+
+import "../std/learn.bc";
+import "../std/sys.bc";
+
+// Ячейка контекстной памяти на словарь из Vocab слов
+struct ContextCell<Vocab> {
+    memory: bvec<64>;              // Кратковременная память предложения
+    weights: bvec<64>[Vocab];      // Трафареты ассоциаций
+}
+
+// Сброс контекста перед новым предложением
+fn (c: *ContextCell<Vocab>) reset() {
+    c.memory = 0;
+}
+
+// Вплетает новое слово в память и возвращает ID наиболее вероятного следующего слова
+fn (c: *ContextCell<Vocab>) step(wordVec: bvec<64>) -> int {
+    c.memory = (c.memory >> 1) ^ wordVec;
+
+    bestId: int = 0;
+    bestScore: int = -1;
+
+    for i in 0..Vocab {
+        score: int = count(match(c.memory, c.weights[i]));
+        if score > bestScore {
+            bestScore = score;
+            bestId = i;
+        }
+    }
+    return bestId;
+}
+
+// Обучение с коррекцией ошибок: притягиваем цель и наказываем ошибочного победителя
+fn (c: *ContextCell<Vocab>) trainStep(wordVec: bvec<64>, targetId: int) {
+    c.memory = (c.memory >> 1) ^ wordVec;
+    nudge<64>(&c.weights[targetId], c.memory, 1, rand_mask());
+
+    bestId: int = 0;
+    bestScore: int = -1;
+    for i in 0..Vocab {
+        score: int = count(match(c.memory, c.weights[i]));
+        if score > bestScore {
+            bestScore = score;
+            bestId = i;
+        }
+    }
+    if bestId != targetId {
+        nudge<64>(&c.weights[bestId], c.memory, 0, rand_mask());
+    }
+}
+
+fn main() {
+    wCat: bvec<64> = 0x8F3A1C9E4B72D051;
+    wSat: bvec<64> = 0x2E94F71B6D08A3C5;
+    wOn:  bvec<64> = 0x71C50A8E3F924B6D;
+    wMat: bvec<64> = 0xD46B82F019E57A38;
+
+    llm: ContextCell<4>;
+
+    for epoch in 0..150 {
+        llm.reset();
+        llm.trainStep(wCat, 1);
+        llm.trainStep(wSat, 2);
+        llm.trainStep(wOn,  3);
+    }
+
+    llm.reset();
+    print llm.step(wCat); // 1 ("сел")
+    print llm.step(wSat); // 2 ("на")
+    print llm.step(wOn);  // 3 ("коврик")
+}

@@ -1,0 +1,56 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# BIT-C compiler & build artifacts
+/bitc
+*.out
+*.o
+*.so
+*.dylib
+*.a
+*.c.tmp
+/build/
+/tmp/
+
+# Local AI / session scratch files (keep CONTEXT_SNAPSHOT.md tracked!)
+prompt.md
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# BIT-C compiler & build artifacts
+/bitc
+*.out
+*.o
+*.so
+*.dylib
+*.a
+*.c.tmp
+/build/
+/tmp/
+
+# Local AI / session scratch files (keep CONTEXT_SNAPSHOT.md tracked!)
+prompt.md
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
