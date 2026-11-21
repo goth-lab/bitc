@@ -1,0 +1,90 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/post.bc
+// Description: Integer bounding-box IoU (Q16.16) and hysteresis debounce filters for Edge AI.
+
+// MARK: - Integer Bounding Box and Q16.16 IoU
+
+/// @brief Axis-aligned integer bounding box produced by an object detector.
+struct BBox {
+    x1: int;
+    y1: int;
+    x2: int;
+    y2: int;
+    score: int;
+    class_id: int;
+}
+
+/// @brief Computes Intersection-over-Union (IoU) in Q16.16 fixed-point (0..65536) without floats.
+/// @param a First bounding box.
+/// @param b Second bounding box.
+/// @return IoU ratio multiplied by 65536 (e.g., 32768 = 0.5 IoU).
+fn bbox_iou_q16(a: BBox, b: BBox) -> int {
+    ix1: int = a.x1;
+    if b.x1 > ix1 { ix1 = b.x1; }
+    iy1: int = a.y1;
+    if b.y1 > iy1 { iy1 = b.y1; }
+
+    ix2: int = a.x2;
+    if b.x2 < ix2 { ix2 = b.x2; }
+    iy2: int = a.y2;
+    if b.y2 < iy2 { iy2 = b.y2; }
+
+    iw: int = ix2 - ix1;
+    ih: int = iy2 - iy1;
+    if iw <= 0 { return 0; }
+    if ih <= 0 { return 0; }
+
+    inter_area: int = iw * ih;
+    area_a: int = (a.x2 - a.x1) * (a.y2 - a.y1);
+    area_b: int = (b.x2 - b.x1) * (b.y2 - b.y1);
+    union_area: int = area_a + area_b - inter_area;
+    if union_area <= 0 { return 0; }
+
+    return (inter_area * 65536) / union_area;
+}
+
+// MARK: - Hysteresis Debounce Filter
+
+/// @brief Temporal debounce filter preventing false-positive triggers in noisy sensor streams.
+struct DebounceFilter {
+    confirm_needed: int;
+    release_needed: int;
+    hit_streak: int;
+    miss_streak: int;
+    active: int;
+}
+
+/// @brief Initializes the debounce filter with consecutive hit/miss thresholds.
+/// @param self Pointer to the DebounceFilter instance.
+/// @param confirm_needed Consecutive positive detections required to activate output.
+/// @param release_needed Consecutive negative frames required to deactivate output.
+fn (self: *DebounceFilter) init(confirm_needed: int, release_needed: int) {
+    self.confirm_needed = confirm_needed;
+    self.release_needed = release_needed;
+    self.hit_streak = 0;
+    self.miss_streak = 0;
+    self.active = 0;
+}
+
+/// @brief Updates the filter with the latest raw detection flag (1=detected, 0=absent).
+/// @param self Pointer to the DebounceFilter instance.
+/// @param detected Raw frame detection flag (non-zero for hit, 0 for miss).
+/// @return Filtered debounced state (1=confirmed active, 0=inactive).
+fn (self: *DebounceFilter) update(detected: int) -> int {
+    if detected != 0 {
+        self.hit_streak = self.hit_streak + 1;
+        self.miss_streak = 0;
+        if self.hit_streak >= self.confirm_needed {
+            self.active = 1;
+        }
+    } else {
+        self.miss_streak = self.miss_streak + 1;
+        self.hit_streak = 0;
+        if self.miss_streak >= self.release_needed {
+            self.active = 0;
+        }
+    }
+    return self.active;
+}

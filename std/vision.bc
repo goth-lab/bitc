@@ -1,0 +1,81 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/vision.bc
+// Description: Zero-allocation integer computer vision primitives and 256-bit spatial HDC encoder.
+
+// MARK: - Zero-Copy Grayscale Image View
+
+/// @brief Non-owning strided 8-bit grayscale image view.
+struct GrayImageView {
+    data: *u8;
+    width: int;
+    height: int;
+    stride: int;
+}
+
+/// @brief Extracts a zero-copy region of interest (ROI) in O(1) time.
+/// @param self Pointer to the source GrayImageView.
+/// @param x Left offset in pixels.
+/// @param y Top offset in pixels.
+/// @param w ROI width in pixels.
+/// @param h ROI height in pixels.
+/// @return Cropped GrayImageView (empty view with width=0 if out of bounds).
+fn (self: *GrayImageView) crop(x: int, y: int, w: int, h: int) -> GrayImageView {
+    out: GrayImageView;
+    if x < 0 { return out; }
+    if y < 0 { return out; }
+    if w <= 0 { return out; }
+    if h <= 0 { return out; }
+    if x + w > self.width { return out; }
+    if y + h > self.height { return out; }
+
+    offset: int = y * self.stride + x;
+    out.data = &self.data[offset];
+    out.width = w;
+    out.height = h;
+    out.stride = self.stride;
+    return out;
+}
+
+/// @brief Converts packed RGB888 bytes into grayscale using ITU-R BT.601 integer weights.
+/// @param rgb Pointer to packed R, G, B bytes (3 * width * height bytes).
+/// @param dst Destination GrayImageView receiving luma pixels.
+fn rgb888_to_gray(rgb: *u8, dst: GrayImageView) {
+    for y in 0..dst.height {
+        for x in 0..dst.width {
+            rgb_idx: int = (y * dst.width + x) * 3;
+            r: int = rgb[rgb_idx];
+            g: int = rgb[rgb_idx + 1];
+            b: int = rgb[rgb_idx + 2];
+            luma: int = (77 * r + 150 * g + 29 * b) >> 8;
+            dst_idx: int = y * dst.stride + x;
+            dst.data[dst_idx] = luma;
+        }
+    }
+}
+
+/// @brief Downsamples any image view to a 16x16 grid and binarizes into a 256-bit hypervector.
+/// @param img Source GrayImageView (must have width >= 16 and height >= 16).
+/// @param threshold Pixel intensity threshold (pixels > threshold become 1-bits).
+/// @return 256-bit spatial signature hypervector ready for XNOR match().
+fn encode_grid_16x16_bvec256(img: GrayImageView, threshold: int) -> bvec<256> {
+    out: bvec<256>;
+    if img.width < 16 { return out; }
+    if img.height < 16 { return out; }
+
+    for gy in 0..16 {
+        sy: int = (gy * img.height) / 16;
+        for gx in 0..16 {
+            sx: int = (gx * img.width) / 16;
+            px: int = img.data[sy * img.stride + sx];
+            bit_idx: int = gy * 16 + gx;
+            if px > threshold {
+                out[bit_idx] = 1;
+            } else {
+                out[bit_idx] = 0;
+            }
+        }
+    }
+    return out;
+}

@@ -1,0 +1,71 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/edge_sensors_test.bc
+// Description: Unit tests for std/vision.bc, std/audio.bc, and std/post.bc.
+
+import "../std/test.bc";
+import "../std/vision.bc";
+import "../std/audio.bc";
+import "../std/post.bc";
+
+// MARK: - Unit Tests for Vision, Audio, and Post-Processing
+
+test "GrayImageView crop and encode_grid_16x16_bvec256" {
+    raw: u8[256];
+    for i in 0..256 {
+        raw[i] = 200;
+    }
+    img: GrayImageView;
+    img.data = &raw;
+    img.width = 16;
+    img.height = 16;
+    img.stride = 16;
+
+    hv: bvec<256> = encode_grid_16x16_bvec256(img, 128);
+    assert_popcount<256>(hv, 256, 1);
+
+    roi: GrayImageView = img.crop(4, 4, 8, 8);
+    assert_eq(roi.width, 8, 2);
+    assert_eq(roi.height, 8, 3);
+}
+
+test "AudioFrame16 VAD, ZCR, and 64-bit temporal profile encoding" {
+    pcm: i16[64];
+    for i in 0..64 {
+        if i < 32 {
+            pcm[i] = 1000;
+        } else {
+            pcm[i] = -100;
+        }
+    }
+    frame: AudioFrame16;
+    frame.samples = &pcm;
+    frame.len = 64;
+    frame.sample_rate = 16000;
+
+    assert_eq(audio_mean_abs(frame), 550, 10);
+    assert_eq(audio_vad(frame, 500), 1, 11);
+    assert_eq(audio_vad(frame, 600), 0, 12);
+
+    hv: bvec<64> = encode_audio_64(frame);
+    assert_popcount<64>(hv, 32, 13);
+}
+
+test "BBox Q16.16 IoU and DebounceFilter hysteresis" {
+    a: BBox;
+    a.x1 = 0; a.y1 = 0; a.x2 = 10; a.y2 = 10;
+    b: BBox;
+    b.x1 = 5; b.y1 = 0; b.x2 = 15; b.y2 = 10;
+
+    // Intersection = 50, Union = 100 + 100 - 50 = 150 -> IoU = 1/3 = 21845 in Q16.16
+    assert_eq(bbox_iou_q16(a, b), 21845, 20);
+
+    flt: DebounceFilter;
+    flt.init(3, 2);
+    assert_eq(flt.update(1), 0, 21);
+    assert_eq(flt.update(1), 0, 22);
+    assert_eq(flt.update(1), 1, 23);
+    assert_eq(flt.update(0), 1, 24);
+    assert_eq(flt.update(0), 0, 25);
+}
