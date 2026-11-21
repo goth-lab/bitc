@@ -1,0 +1,55 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/stream_test.bc
+// Description: Unit tests for std/stream.bc backpressure policies and channel lifecycle.
+
+import "../std/test.bc";
+import "../std/stream.bc";
+
+// MARK: - Unit Tests for std/stream
+
+test "Channel Reject policy blocks overflow and tracks drops" {
+    ch: Channel<int, 2>;
+    ch.init(stream_policy_reject());
+
+    assert_eq(ch.send(10), 1, 1);
+    assert_eq(ch.send(20), 1, 2);
+    assert_eq(ch.send(30), 0, 3);
+    assert_eq(ch.dropped_total, 1, 4);
+
+    val: int = 0;
+    assert_eq(ch.recv(&val), 1, 5);
+    assert_eq(val, 10, 6);
+}
+
+test "Channel DropOldest policy keeps freshest frames on overflow" {
+    cam_ch: Channel<bvec<64>, 2>;
+    cam_ch.init(stream_policy_drop_oldest());
+
+    cam_ch.send(0x01);
+    cam_ch.send(0x02);
+    cam_ch.send(0x03);
+
+    assert_eq(cam_ch.pending(), 2, 10);
+    assert_eq(cam_ch.dropped_total, 1, 11);
+
+    frame: bvec<64> = 0;
+    assert_eq(cam_ch.recv(&frame), 1, 12);
+    assert_eq(frame, 0x02, 13);
+    assert_eq(cam_ch.recv(&frame), 1, 14);
+    assert_eq(frame, 0x03, 15);
+}
+
+test "Channel close rejects new writes while allowing drain" {
+    ch: Channel<int, 4>;
+    ch.init(stream_policy_reject());
+    ch.send(77);
+    ch.close();
+
+    assert_eq(ch.send(88), 0, 20);
+    out: int = 0;
+    assert_eq(ch.recv(&out), 1, 21);
+    assert_eq(out, 77, 22);
+    assert_eq(ch.recv(&out), 0, 23);
+}

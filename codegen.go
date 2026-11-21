@@ -104,9 +104,10 @@ static inline void bitc_assert(int64_t cond, int64_t line) {
 
 // MARK: - Structs and Function Declarations
 
-// emitStructs emits C typedef structs for all monomorphized BIT-C structures.
+// emitStructs emits C typedef structs in dependency order (children before parents).
 func (g *CodeGenerator) emitStructs() {
-	for _, st := range g.ctx.MonoStructs {
+	for _, name := range g.ctx.MonoStructOrder {
+		st := g.ctx.MonoStructs[name]
 		g.sb.WriteString("typedef struct {\n")
 		for _, f := range st.Fields {
 			fmt.Fprintf(&g.sb, "    %s;\n", g.formatVarDecl(f.Name, f.Type))

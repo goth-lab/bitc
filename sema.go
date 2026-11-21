@@ -17,6 +17,7 @@ type SemaContext struct {
 	StructTemplates map[string]*StructNode // Parsed generic struct templates
 	FuncTemplates   map[string]*FnNode     // Parsed function, method, and test templates
 	MonoStructs     map[string]*StructNode // Specialized structs (e.g., Dense_256_8)
+	MonoStructOrder []string               // Dependency-ordered struct names (children first)
 	MonoFuncs       map[string]*FnNode     // Specialized functions and methods
 	ExprTypes       map[Expr]TypeExpr      // Inferred TypeExpr for every AST expression
 	ResolvedCalls   map[*CallExpr]string   // Resolved C target identifier for each call
@@ -124,24 +125,22 @@ func fnKey(fn *FnNode) string {
 }
 
 // instantiateStruct creates a concrete specialization of a generic struct
-// (e.g., Dense<256, 8> -> Dense_256_8) and instantiates all its bound methods.
+// (e.g., Dense<256, 8> -> Dense_256_8) in dependency order and instantiates its methods.
 func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
-	if t.Name == "bvec" || t.Name == "slice" || t.Name == "int" || t.Name == "bit" || t.Name == "void" {
+	if _, alreadyMono := ctx.MonoStructs[t.Name]; alreadyMono {
+		return t, nil
+	}
+	if t.Name == "bvec" || t.Name == "slice" || t.Name == "int" || t.Name == "i32" ||
+		t.Name == "i16" || t.Name == "i8" || t.Name == "u8" || t.Name == "bit" || t.Name == "void" {
 		return t, nil
 	}
 
 	baseName := t.Name
 	typeParams := t.TypeParams
 	if len(typeParams) == 0 {
-		if base, rest, found := strings.Cut(baseName, "_"); found {
-			baseName = base
-			typeParams = strings.Split(rest, "_")
-		}
-	}
-
-	if len(typeParams) == 0 {
 		if tmpl, ok := ctx.StructTemplates[baseName]; ok {
 			ctx.MonoStructs[baseName] = tmpl
+			ctx.MonoStructOrder = append(ctx.MonoStructOrder, baseName)
 		}
 		return t, nil
 	}
@@ -155,8 +154,13 @@ func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 			t.Line, baseName, len(tmpl.TypeParams), len(typeParams))
 	}
 
-	monoName := baseName + "_" + strings.Join(typeParams, "_")
+	var safeParts []string
+	for _, tp := range typeParams {
+		safeParts = append(safeParts, sanitizeMonoPart(tp))
+	}
+	monoName := baseName + "_" + strings.Join(safeParts, "_")
 	resType := TypeExpr{Line: t.Line, Name: monoName, IsPointer: t.IsPointer, ArraySize: t.ArraySize}
+
 	if _, exists := ctx.MonoStructs[monoName]; exists {
 		return resType, nil
 	}
@@ -167,13 +171,22 @@ func (ctx *SemaContext) instantiateStruct(t TypeExpr) (TypeExpr, error) {
 	}
 
 	monoStruct := &StructNode{Line: tmpl.Line, Name: monoName}
-	for _, f := range tmpl.Fields {
-		monoStruct.Fields = append(monoStruct.Fields, Field{
-			Line: f.Line, Name: f.Name, Type: substituteType(f.Type, subst),
-		})
-	}
 	ctx.MonoStructs[monoName] = monoStruct
 
+	// Recursively instantiate all field types first so child structs precede parent in C.
+	for _, f := range tmpl.Fields {
+		subFieldType := substituteType(f.Type, subst)
+		instFieldType, err := ctx.instantiateStruct(subFieldType)
+		if err != nil {
+			return resType, err
+		}
+		monoStruct.Fields = append(monoStruct.Fields, Field{
+			Line: f.Line, Name: f.Name, Type: instFieldType,
+		})
+	}
+	ctx.MonoStructOrder = append(ctx.MonoStructOrder, monoName)
+
+	// Instantiate all methods bound to this struct template.
 	for _, fn := range ctx.FuncTemplates {
 		if fn.Receiver != nil && fn.Receiver.Type.Name == tmpl.Name {
 			if _, err := ctx.instantiateFunc(fn, subst); err != nil {
@@ -201,9 +214,9 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 			var resolved []string
 			for _, tp := range tmpl.Receiver.Type.TypeParams {
 				if val, ok := subst[tp]; ok {
-					resolved = append(resolved, val)
+					resolved = append(resolved, sanitizeMonoPart(val))
 				} else {
-					resolved = append(resolved, tp)
+					resolved = append(resolved, sanitizeMonoPart(tp))
 				}
 			}
 			recBase = recBase + "_" + strings.Join(resolved, "_")
@@ -230,12 +243,18 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 
 	scope := make(map[string]TypeExpr)
 	if tmpl.Receiver != nil {
-		recType := substituteType(tmpl.Receiver.Type, subst)
+		recType, err := ctx.instantiateStruct(substituteType(tmpl.Receiver.Type, subst))
+		if err != nil {
+			return nil, err
+		}
 		monoFn.Receiver = &Field{Line: tmpl.Receiver.Line, Name: tmpl.Receiver.Name, Type: recType}
 		scope[tmpl.Receiver.Name] = recType
 	}
 	for _, p := range tmpl.Params {
-		pType := substituteType(p.Type, subst)
+		pType, err := ctx.instantiateStruct(substituteType(p.Type, subst))
+		if err != nil {
+			return nil, err
+		}
 		monoFn.Params = append(monoFn.Params, Field{Line: p.Line, Name: p.Name, Type: pType})
 		scope[p.Name] = pType
 	}
@@ -252,11 +271,18 @@ func (ctx *SemaContext) instantiateFunc(tmpl *FnNode, parentSubst map[string]str
 	return monoFn, nil
 }
 
-// substituteType replaces template parameter names inside a TypeExpr with concrete values.
+// substituteType replaces template parameter names inside a TypeExpr with concrete values,
+// expanding nested generic arguments (e.g., T -> bvec<64>) while still substituting ArraySize.
 func substituteType(t TypeExpr, subst map[string]string) TypeExpr {
 	res := t
 	if val, ok := subst[res.Name]; ok {
-		res.Name = val
+		if base, rest, found := strings.Cut(val, "<"); found {
+			res.Name = base
+			inner := strings.TrimSuffix(rest, ">")
+			res.TypeParams = strings.Split(inner, ",")
+		} else {
+			res.Name = val
+		}
 	}
 	if val, ok := subst[res.ArraySize]; ok {
 		res.ArraySize = val
@@ -269,10 +295,6 @@ func substituteType(t TypeExpr, subst map[string]string) TypeExpr {
 			} else {
 				res.TypeParams[i] = tp
 			}
-		}
-		if res.Name != "bvec" && res.Name != "slice" {
-			res.Name = res.Name + "_" + strings.Join(res.TypeParams, "_")
-			res.TypeParams = nil
 		}
 	}
 	return res
@@ -583,4 +605,12 @@ func getBitWidth(t TypeExpr) int {
 		return w
 	}
 	return 0
+}
+
+// sanitizeMonoPart converts a generic type argument (e.g., "bvec<64>") into a C-safe identifier ("bvec_64").
+func sanitizeMonoPart(arg string) string {
+	s := strings.ReplaceAll(arg, "<", "_")
+	s = strings.ReplaceAll(s, ">", "")
+	s = strings.ReplaceAll(s, ",", "_")
+	return s
 }

@@ -1,0 +1,95 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/stream.bc
+// Description: Bounded typed streaming channels with configurable backpressure policies.
+
+import "mem.bc";
+
+// MARK: - Backpressure Policy Constants
+
+/// @brief Rejects incoming items when the channel is full (returns 0).
+fn stream_policy_reject() -> int { return 0; }
+
+/// @brief Evicts the oldest buffered item to accept fresh real-time data.
+fn stream_policy_drop_oldest() -> int { return 1; }
+
+/// @brief Silently discards the incoming item when full while preserving older items.
+fn stream_policy_drop_newest() -> int { return 2; }
+
+// MARK: - Bounded Channel<T, Cap>
+
+/// @brief Bounded FIFO channel with backpressure control and drop telemetry.
+/// @tparam T Payload type (e.g., i16 audio sample, u8 byte, bvec<256> frame).
+/// @tparam Cap Static queue capacity.
+struct Channel<T, Cap> {
+    ring: RingBuffer<T, Cap>;
+    policy: int;
+    closed: int;
+    sent_total: int;
+    dropped_total: int;
+}
+
+/// @brief Initializes a channel with the given backpressure policy (0, 1, or 2).
+/// @param self Pointer to the Channel instance.
+/// @param policy Backpressure behavior on full buffer.
+fn (self: *Channel<T, Cap>) init(policy: int) {
+    self.ring.head = 0;
+    self.ring.tail = 0;
+    self.ring.count = 0;
+    self.policy = policy;
+    self.closed = 0;
+    self.sent_total = 0;
+    self.dropped_total = 0;
+}
+
+// MARK: - Channel Operations (Send, Receive, Close)
+
+/// @brief Sends an item into the channel according to its backpressure policy.
+/// @param self Pointer to the Channel instance.
+/// @param item Payload value to enqueue.
+/// @return 1 if accepted (or handled by drop policy), 0 if closed or rejected.
+fn (self: *Channel<T, Cap>) send(item: T) -> int {
+    if self.closed != 0 {
+        return 0;
+    }
+    if self.ring.is_full() != 0 {
+        if self.policy == 0 {
+            self.dropped_total = self.dropped_total + 1;
+            return 0;
+        }
+        if self.policy == 1 {
+            self.ring.push_overwrite(item);
+            self.sent_total = self.sent_total + 1;
+            self.dropped_total = self.dropped_total + 1;
+            return 1;
+        }
+        // Policy 2: DropNewest
+        self.dropped_total = self.dropped_total + 1;
+        return 1;
+    }
+    self.ring.push(item);
+    self.sent_total = self.sent_total + 1;
+    return 1;
+}
+
+/// @brief Receives the next available item from the channel into `out`.
+/// @param self Pointer to the Channel instance.
+/// @param out Destination pointer receiving the dequeued item.
+/// @return 1 if an item was read, 0 if empty.
+fn (self: *Channel<T, Cap>) recv(out: *T) -> int {
+    return self.ring.pop(out);
+}
+
+/// @brief Marks the channel as closed; subsequent send() calls return 0.
+/// @param self Pointer to the Channel instance.
+fn (self: *Channel<T, Cap>) close() {
+    self.closed = 1;
+}
+
+/// @brief Returns the number of items currently queued in the channel.
+/// @param self Pointer to the Channel instance.
+/// @return Current queue depth.
+fn (self: *Channel<T, Cap>) pending() -> int {
+    return self.ring.len();
+}

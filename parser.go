@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // MARK: - Operator Precedence and Parser State
 
@@ -118,17 +121,24 @@ func (p *Parser) parseTest(idx int) *FnNode {
 	}
 }
 
-// parseTypeParams parses generic arguments enclosed in angle brackets <T1, T2>.
+// parseTypeParams parses generic arguments enclosed in angle brackets <T1, T2>,
+// supporting nested generic types such as Channel<bvec<64>, 2>.
 func (p *Parser) parseTypeParams() []string {
 	var params []string
 	if p.curTok.Type != TOK_LT {
 		return params
 	}
-	p.nextToken() // Skip '<'
+	p.nextToken() // Skip opening '<'
 	for p.curTok.Type != TOK_GT && p.curTok.Type != TOK_EOF {
 		if p.curTok.Type == TOK_IDENT || p.curTok.Type == TOK_NUMBER {
-			params = append(params, p.curTok.Literal)
+			arg := p.curTok.Literal
 			p.nextToken()
+			// Handle nested generic type arguments like bvec<64> -> "bvec<64>".
+			if p.curTok.Type == TOK_LT {
+				nested := p.parseTypeParams()
+				arg = fmt.Sprintf("%s<%s>", arg, strings.Join(nested, ","))
+			}
+			params = append(params, arg)
 		} else {
 			panic(fmt.Sprintf("[Line %d] Invalid type parameter: '%s'", p.curTok.Line, p.curTok.Literal))
 		}
