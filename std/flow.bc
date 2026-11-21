@@ -1,0 +1,142 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: std/flow.bc
+// Description: Deterministic finite state machines (FSM) and 256-bit HDC semantic intent routing.
+
+// MARK: - Deterministic Finite State Machine (FSM)
+
+/// @brief Single state transition rule mapping (from_state, event) -> to_state.
+struct TransitionRule {
+    from_state: int;
+    event: int;
+    to_state: int;
+}
+
+/// @brief Static deterministic finite state machine for robots, edge devices, and agents.
+/// @tparam MaxRules Maximum number of transition rules stored in static memory.
+struct StateMachine<MaxRules> {
+    current_state: int;
+    safe_state: int;
+    rule_count: int;
+    transitions: int;
+    rules: TransitionRule[MaxRules];
+}
+
+/// @brief Initializes the state machine with an initial state and an emergency safe state.
+/// @param self Pointer to the StateMachine instance.
+/// @param initial_state Starting state ID.
+/// @param safe_state Fallback state ID used by force_safe_stop().
+fn (self: *StateMachine<MaxRules>) init(initial_state: int, safe_state: int) {
+    self.current_state = initial_state;
+    self.safe_state = safe_state;
+    self.rule_count = 0;
+    self.transitions = 0;
+}
+
+/// @brief Registers a deterministic transition rule (from_state + event -> to_state).
+/// @param self Pointer to the StateMachine instance.
+/// @param from_state Required current state ID.
+/// @param event Triggering event ID.
+/// @param to_state Resulting next state ID.
+/// @return 1 on success, 0 if rule capacity MaxRules is full.
+fn (self: *StateMachine<MaxRules>) add_rule(from_state: int, event: int, to_state: int) -> int {
+    if self.rule_count >= MaxRules {
+        return 0;
+    }
+    idx: int = self.rule_count;
+    self.rules[idx].from_state = from_state;
+    self.rules[idx].event = event;
+    self.rules[idx].to_state = to_state;
+    self.rule_count = self.rule_count + 1;
+    return 1;
+}
+
+/// @brief Advances the state machine on `event` if a matching rule exists.
+/// @param self Pointer to the StateMachine instance.
+/// @param event Incoming event ID.
+/// @return 1 if a transition occurred, 0 if no rule matched (state unchanged).
+fn (self: *StateMachine<MaxRules>) step(event: int) -> int {
+    for i in 0..self.rule_count {
+        if self.rules[i].from_state == self.current_state {
+            if self.rules[i].event == event {
+                self.current_state = self.rules[i].to_state;
+                self.transitions = self.transitions + 1;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/// @brief Immediately transitions the machine into its preconfigured safe_state.
+/// @param self Pointer to the StateMachine instance.
+fn (self: *StateMachine<MaxRules>) force_safe_stop() {
+    self.current_state = self.safe_state;
+    self.transitions = self.transitions + 1;
+}
+
+// MARK: - 256-Bit Hyperdimensional Semantic Intent Router
+
+/// @brief Route entry binding a 256-bit prototype hypervector to a target route ID.
+struct RouteEntry256 {
+    route_id: int;
+    prototype: bvec<256>;
+}
+
+/// @brief Hardware-accelerated XNOR/POPCNT intent router operating on 256-bit hypervectors.
+/// @tparam MaxRoutes Maximum number of registered routing targets.
+/// @note Replaces floating-point cosine similarity with single-cycle POPCNT Hamming match.
+struct IntentRouter256<MaxRoutes> {
+    count: int;
+    min_score: int;
+    routes: RouteEntry256[MaxRoutes];
+}
+
+/// @brief Initializes the router with a minimum Hamming similarity threshold (0..256).
+/// @param self Pointer to the IntentRouter256 instance.
+/// @param min_score Minimum matching bits required to accept a route (e.g., 160 out of 256).
+fn (self: *IntentRouter256<MaxRoutes>) init(min_score: int) {
+    self.count = 0;
+    self.min_score = min_score;
+}
+
+/// @brief Registers a named route ID with its 256-bit prototype signature.
+/// @param self Pointer to the IntentRouter256 instance.
+/// @param route_id Numeric identifier of the handler or downstream agent.
+/// @param proto 256-bit hypervector signature representing the intent.
+/// @return 1 on success, 0 if MaxRoutes capacity is reached.
+fn (self: *IntentRouter256<MaxRoutes>) register_route(route_id: int, proto: bvec<256>) -> int {
+    if self.count >= MaxRoutes {
+        return 0;
+    }
+    idx: int = self.count;
+    self.routes[idx].route_id = route_id;
+    self.routes[idx].prototype = proto;
+    self.count = self.count + 1;
+    return 1;
+}
+
+/// @brief Finds the best matching route for `query` above `min_score`.
+/// @param self Pointer to the IntentRouter256 instance.
+/// @param query 256-bit hypervector encoding the incoming input or command.
+/// @param out_score Optional pointer receiving the winning match score (0..256); may be 0.
+/// @return Winning `route_id`, or -1 if no route meets `min_score`.
+fn (self: *IntentRouter256<MaxRoutes>) route(query: bvec<256>, out_score: *int) -> int {
+    best_id: int = -1;
+    best_score: int = -1;
+    for i in 0..self.count {
+        score: int = count(match(query, self.routes[i].prototype));
+        if score > best_score {
+            best_score = score;
+            best_id = self.routes[i].route_id;
+        }
+    }
+    if out_score != 0 {
+        *out_score = best_score;
+    }
+    if best_score < self.min_score {
+        return -1;
+    }
+    return best_id;
+}

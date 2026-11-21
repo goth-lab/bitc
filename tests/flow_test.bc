@@ -1,0 +1,68 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: tests/flow_test.bc
+// Description: Unit tests for std/flow.bc (StateMachine FSM and IntentRouter256).
+
+import "../std/test.bc";
+import "../std/sys.bc";
+import "../std/flow.bc";
+
+// MARK: - Unit Tests for std/flow
+
+test "StateMachine deterministic transitions and emergency safe stop" {
+    // States: 0=IDLE, 1=ACTIVE, 2=ERROR_SAFE
+    // Events: 10=START, 20=STOP
+    fsm: StateMachine<4>;
+    fsm.init(0, 2);
+
+    assert_eq(fsm.add_rule(0, 10, 1), 1, 1);
+    assert_eq(fsm.add_rule(1, 20, 0), 1, 2);
+
+    // Unknown event in IDLE leaves state unchanged
+    assert_eq(fsm.step(20), 0, 3);
+    assert_eq(fsm.current_state, 0, 4);
+
+    // Valid START transition -> ACTIVE (1)
+    assert_eq(fsm.step(10), 1, 5);
+    assert_eq(fsm.current_state, 1, 6);
+
+    // Emergency safe stop -> ERROR_SAFE (2)
+    fsm.force_safe_stop();
+    assert_eq(fsm.current_state, 2, 7);
+    assert_eq(fsm.transitions, 2, 8);
+}
+
+test "IntentRouter256 selects closest hypervector route above threshold" {
+    router: IntentRouter256<4>;
+    router.init(200);
+
+    proto_nav: bvec<256> = rand_mask256();
+    proto_arm: bvec<256> = ~proto_nav;
+
+    assert_eq(router.register_route(101, proto_nav), 1, 10);
+    assert_eq(router.register_route(202, proto_arm), 1, 11);
+
+    // Slightly noisy query (flip 4 bits of proto_nav -> score = 252 >= 200)
+        // Slightly noisy query (flip 4 bits of proto_nav -> score = 252 >= 200)
+    query: bvec<256> = proto_nav;
+    b0: int = 0;
+    b1: int = 1;
+    b2: int = 2;
+    b3: int = 3;
+    query[b0] = ~query[b0];
+    query[b1] = ~query[b1];
+    query[b2] = ~query[b2];
+    query[b3] = ~query[b3];
+
+    score: int = 0;
+    matched_id: int = router.route(query, &score);
+    assert_eq(matched_id, 101, 12);
+    assert_eq(score, 252, 13);
+
+    // Orthogonal/unrelated query below threshold 200 must return -1
+    strict_router: IntentRouter256<2>;
+    strict_router.init(255);
+    strict_router.register_route(101, proto_nav);
+    assert_eq(strict_router.route(query, &score), -1, 14);
+}

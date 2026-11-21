@@ -417,6 +417,17 @@ func (ctx *SemaContext) checkStmts(stmts []Stmt, scope map[string]TypeExpr, expe
 				return err
 			}
 		case *ForStmt:
+			if _, err := ctx.inferExpr(st.Start, scope); err != nil {
+				return err
+			}
+			if _, err := ctx.inferExpr(st.End, scope); err != nil {
+				return err
+			}
+			if st.Step != nil {
+				if _, err := ctx.inferExpr(st.Step, scope); err != nil {
+					return err
+				}
+			}
 			scope[st.Iterator] = TypeExpr{Line: st.Line, Name: "int"}
 			if err := ctx.checkStmts(st.Body, scope, expectedRet); err != nil {
 				return err
