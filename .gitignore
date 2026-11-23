@@ -57,3 +57,4 @@ prompt.md
 
 # Runtime model weight dumps
 weights_slot_*.bin
+CONTEXT_SNAPSHOT.md
