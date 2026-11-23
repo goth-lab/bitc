@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: lexer.go
+// Description: Lexical analyzer (tokenizer) for the BIT-C programming language.
+
 package main
 
 import (

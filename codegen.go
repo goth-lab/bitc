@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: codegen.go
+// Description: Transpiler backend generating 32-byte SIMD-aligned C99/C11 code with OpenMP and POPCNT intrinsics.
+
 package main
 
 import (

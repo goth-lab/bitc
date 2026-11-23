@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: ast.go
+// Description: Abstract Syntax Tree (AST) node definitions for BIT-C declarations, types, and expressions.
+
 // Package main implements the BIT-C compiler frontend, semantic analyzer, and C backend.
 package main
 
