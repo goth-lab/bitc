@@ -22,7 +22,7 @@ import (
 // or a single-file / directory-wide unit test run.
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: bitc <source_file.bc> | bitc test <file.bc | dir/>")
+		fmt.Println("Usage: bitc <source_file.bc> | bitc test <file.bc | dir/> | bitc check <file.bc>")
 		return
 	}
 
@@ -32,6 +32,15 @@ func main() {
 			return
 		}
 		runTestTarget(os.Args[2])
+		return
+	}
+
+	if os.Args[1] == "check" {
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: bitc check <source_file.bc>")
+			return
+		}
+		checkFile(os.Args[2])
 		return
 	}
 
@@ -161,4 +170,43 @@ func buildTestHarnessMain(testFuncs []string) string {
 	fmt.Fprintf(&sb, "    printf(\"[BIT-C TEST] All %d test(s) passed!\\n\");\n", len(testFuncs))
 	sb.WriteString("    return 0;\n}\n")
 	return sb.String()
+}
+
+// checkFile runs fast lexical, syntactic, and semantic checks without invoking Clang,
+// formatting diagnostics in standard file:line:col format for IDE integration.
+func checkFile(inputFile string) {
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("%v", r)
+			line := "1"
+			if strings.HasPrefix(msg, "[Line ") {
+				if end := strings.Index(msg, "] "); end > 6 {
+					line = msg[6:end]
+					msg = msg[end+2:]
+				}
+			}
+			fmt.Printf("%s:%s:1: error: %s\n", inputFile, line, msg)
+			os.Exit(1)
+		}
+	}()
+
+	prog, err := LoadProgramWithImports(inputFile)
+	if err != nil {
+		fmt.Printf("%s:1:1: error: %v\n", inputFile, err)
+		os.Exit(1)
+	}
+	if _, err := AnalyzeProgram(prog, false); err != nil {
+		msg := err.Error()
+		line := "1"
+		if idx := strings.Index(msg, "[Line "); idx != -1 {
+			sub := msg[idx+6:]
+			if end := strings.Index(sub, "] "); end > 0 {
+				line = sub[:end]
+				msg = sub[end+2:]
+			}
+		}
+		fmt.Printf("%s:%s:1: error: %s\n", inputFile, line, msg)
+		os.Exit(1)
+	}
+	fmt.Printf("[BIT-C CHECK] OK: %s\n", inputFile)
 }
