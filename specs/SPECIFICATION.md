@@ -1,206 +1,59 @@
-# BIT-C Standard Library Specification (`SPEC.md` — Part 1)
+# BIT-C Standard Library Specification (`SPECIFICATION.md` — v0.1.0-alpha)
 
-## 0. Архитектурные соглашения языка для `stdlib`
+> [Читать на русском](ru/SPECIFICATION.md)
 
-### Вычислительный манифест BIT-C (No Float, No GPU)
-* **Строго целочисленная и битовая архитектура:** В стандартной библиотеке BIT-C **полностью отсутствуют** типы с плавающей точкой (`f32`, `f64`) и зависимость от GPU.
-* **Замена `float` в AI-примитивах:**
-  * Квантованные тензоры используют `i8`, `i16`, `i32`, `u8` и упакованные битовые векторы `bvec<N>`.
-  * Масштабирование, пороги, оконные функции (БПФ/Mel) и фильтры используют арифметику с фиксированной точкой **`Q16.16`** (сдвиги `>> 16`) и побитовую логику (`match` / `count`).
+## 1. Architectural Manifesto (100% Integer & Bitwise)
 
-Чтобы вся стандартная библиотека (от работы с регистрами MCU до когнитивных агентов) была консистентной, фиксируем базовые правила, которые должен поддерживать компилятор BIT-C:
-
-1. **Обработка ошибок (`Result<T, E>`):**
-   * В `stdlib` **нет исключений (exceptions)** — они непредсказуемы по памяти и времени выполнения на микроконтроллерах.
-   * Любая операция, которая может завершиться неудачей (аллокация, парсинг JSON, инференс, I/O), возвращает `Result<T, Error>`.
-   * Оператор проброса ошибки: `?` (аналог Rust/Zig).
-2. **Явное управление памятью (Explicit Allocators):**
-   * Ни одна функция `stdlib` не делает скрытых глобальных аллокаций (`malloc`).
-   * Все структуры, требующие динамической или пуловой памяти, принимают интерфейс `Allocator` (например, `ArenaAllocator`, `PoolAllocator`, `StackAllocator`).
-3. **Срезы и владение (`Slice<T>` / `View<T>`):**
-   * Данные передаются через невладеющие представления (`View<u8>`, `TensorView`), что обеспечивает `zero-copy` при прогоне кадров с камеры или аудиопотока через конвейер.
-4. **Модульность и неймспейсы:**
-   * Импорт осуществляется через `use std.<module>::{...};`.
+1. **Zero `float`, Zero GPU:** Floating-point types (`f32`, `f64`) are strictly excluded. Scaling, thresholds, IoU geometry, and signal rates use **`Q16.16`** fixed-point integer math (`>> 16`) and wide bit-vectors `bvec<N>`.
+2. **Deterministic Memory (Zero `malloc`):** Every `std/` structure uses fixed-capacity stack/static storage (`Cap`, `MaxRules`, `MaxTurns`) or non-owning zero-copy views (`TensorView1D`, `GrayImageView`, `AudioFrame16`).
+3. **Non-Throwing Error Contracts:** Functions return explicit integer status codes (`1`/`0` or negative error constants like `io_err_mode()`) or populate `SchemaValidator` state without exceptions.
+4. **Native Doxygen & Test Coverage:** All `std/*.bc` modules carry `///` Doxygen documentation and verified unit test suites in `tests/*_test.bc`.
 
 ---
 
-## 1. Встроенный фреймворк тестирования (`std.test`) — [Priority: CRITICAL]
+## 2. Implemented Module Architecture (Tiers 0–4)
 
-Тестирование встроено в синтаксис языка и CLI компилятора (`bitc test`). На микроконтроллерах тесты могут запускаться как на хост-машине (x86/ARM64), так и через QEMU / hardware-in-the-loop.
+### Tier 0 & Tier 1: Quality, Runtime, Memory, Tensors, Streams & I/O
+* **`std/test.bc`:** `assert_true(cond, step)`, `assert_eq(actual, expected, step)`, `assert_neq(actual, unexpected, step)`, `assert_popcount<N>(vec, expected_ones, step)`.
+* **`std/sys.bc`:** `rand_mask() -> bvec<64>`, `rand_mask256() -> bvec<256>`, `now_ns() -> int`, `print_bench(id, iters, elapsed_ns)`, `save_raw`, `load_raw`.
+* **`std/mem.bc`:** `RingBuffer<T, Cap>` (`push`, `push_overwrite`, `pop`, `len`, `is_full`), `ByteArena<Cap>` (8-byte aligned bump allocator with $O(1)$ `reset()`).
+* **`std/tensor.bc`:** `TensorView1D<T>` (`slice`), `TensorView2D<T>` (`at`), Q16.16 `quantize_i32_to_i8`, `binarize_i8_to_bvec64`.
+* **`std/stream.bc`:** `Channel<T, Cap>` (`init`, `send`, `recv`, `close`, `pending`) with `stream_policy_reject()`, `stream_policy_drop_oldest()`, `stream_policy_drop_newest()`.
+* **`std/io.bc`:** `ByteStream<Cap>` (`write_byte`, `read_byte`, `write_bytes`, `read_bytes`), `GpioPin` (`init`, `write`, `read` with `INPUT`/`OUTPUT` enforcement).
 
-### Ключевые конструкции языка и примитивы:
-* Блок `test "описание теста" { ... }` — игнорируется при обычной сборке (`bitc build`), компилируется только при `bitc test`.
-* Макросы/функции проверок:
-  * `std.test.expect(cond: bool)` — базовая проверка истинности.
-  * `std.test.expect_eq(actual: T, expected: T)` — проверка равенства с выводом diff при падении.
-  * `std.test.expect_err(res: Result<T, E>, expected_err: E)` — проверка ожидаемой ошибки.
-  * `std.test.expect_no_leaks(allocator: *TrackingAllocator)` — проверка отсутствия утечек памяти (критично для `std.mem` и `std.tensor`).
-  * `std.test.mock<T>(...)` — примитив для подмены аппаратного I/O (камеры, UART) или ответов LLM в юнит-тестах.
+### Tier 2 & Tier 3: Sensors, Preprocessing, On-Device Learning & Post-Processing
+* **`std/encode.bc`:** `thermometer64(val) -> bvec<64>` locality-preserving scalar encoder.
+* **`std/vision.bc`:** `GrayImageView` (`crop` in $O(1)$), ITU-R BT.601 `rgb888_to_gray`, spatial `encode_grid_16x16_bvec256`.
+* **`std/audio.bc`:** `AudioFrame16`, `audio_mean_abs`, `audio_vad`, Q16.16 `audio_zcr_q16`, temporal energy `encode_audio_64`.
+* **`std/learn.bc`:** `nudge<N>(&weight, input, wantFire, mask)` stochastic bitwise weight update.
+* **`std/post.bc`:** `BBox`, Q16.16 `bbox_iou_q16`, `DebounceFilter` (`init`, `update` hysteresis filter).
 
-### Пример использования:
-```bitc
-use std.test;
-use std.mem::RingBuffer;
-
-test "RingBuffer переполнение и чтение" {
-    var buf: RingBuffer<u8, 4> = RingBuffer.init();
-    try test.expect(buf.push(10).is_ok());
-    try test.expect(buf.push(20).is_ok());
-    try test.expect_eq(buf.pop(), Some(10));
-}
-```
+### Tier 4: Cognitive Layer & Autonomous Agents
+* **`std/flow.bc`:** `StateMachine<MaxRules>` (`init`, `add_rule`, `step`, `force_safe_stop`), `IntentRouter256<MaxRoutes>` (`register_route`, `route`).
+* **`std/schema.bc`:** `SchemaValidator` (`check_range`, `check_required`, `check_density256`), strict `parse_int_ascii`.
+* **`std/context.bc`:** `ContextWindow<MaxTurns>` (`init`, `push` with token-budget eviction preserving `role_system()`, `recall_best`).
+* **`std/tools.bc`:** `ToolRegistry<MaxTools>` (`init`, `register_tool`, `authorize` enforcing `perm_read_only()`, `perm_actuator()`, `perm_network()`).
+* **`std/reasoning.bc`:** `vote_majority_int`, `bundle_bvec256` bit-wise majority consensus.
 
 ---
 
-## 2. Уровень 1: Системный фундамент (`Core & Resources`)
+## 3. Implementation Status Matrix (`v0.1.0-alpha`)
 
-### 2.1. `std.mem` — Детерминированная память
-Набор аллокаторов и структур без сборщика мусора для работы в условиях жесткого лимита RAM.
-
-* **Типы:**
-  * `Allocator` — базовый интерфейс (`alloc(size, align)`, `free(ptr)`).
-  * `FixedBufferAllocator` — выделение памяти поверх статического массива на стеке или в `.bss`.
-  * `ArenaAllocator` — быстрая аллокация с очисткой всего региона разом (идеально для одного кадра видео или одного шага рассуждения агента).
-  * `RingBuffer<T, const N: usize>` — потокобезопасный (lock-free SPSC) кольцевой буфер фиксированного размера для аудио-сэмплов и пакетов.
-  * `Pool<T, const N: usize>` — пул объектов фиксированного размера (без фрагментации).
-
-### 2.2. `std.tensor` — Легковесные тензоры и квантование
-Абстракция над многомерными массивами с поддержкой типов данных, используемых в Edge AI.
-
-* **Типы данных (`DType`):** `f32`, `f16`, `bf16`, `i8`, `u8`, `i4` (упакованные по 2 значения в байт).
-* **Структуры:**
-  * `Shape` — статический массив размерностей (до 4D/5D без динамических аллокаций).
-  * `Tensor<T>` — владеющий тензор (привязан к `Allocator`).
-  * `TensorView<T>` — невладеющий срез (`slice`, `reshape`, `transpose`, `permute` выполняются за $O(1)$ через изменение `strides` без копирования данных).
-* **Операции:** `quantize(src: TensorView<f32>, scale: f32, zero_point: i8) -> Tensor<i8>`, `dequantize(...)`, `dot(...)`, `softmax(...)`.
-
-### 2.3. `std.stream` — Потоковые конвейеры (Pipelines)
-Управление асинхронными потоками данных с контролем переполнения (backpressure).
-
-* **Примитивы:**
-  * `Channel<T, const CAP: usize>` — типизированный канал передачи данных между этапами конвейера.
-  * `BackpressurePolicy` — стратегия при переполнении: `Block` (ждать), `DropOldest` (выкинуть старый кадр камеры — критично для real-time), `DropNewest` (отбросить новый), `Error`.
-  * `Pipeline` — композиция узлов обработки (`Source -> Transform -> Sink`) с поддержкой тайм-аутов (`timeout_ms`) и graceful shutdown.
-
-### 2.4. `std.io` — Аппаратный и системный ввод-вывод
-Унифицированные потоки байтов (`Reader` / `Writer`), работающие одинаково для файлов, сокетов и микроконтроллерной периферии.
-
-* **Интерфейсы:**
-  * `Reader` (`read(buf: Slice<u8>) -> Result<usize, IoError>`)
-  * `Writer` (`write(data: View<u8>) -> Result<usize, IoError>`)
-* **Реализации:** `File`, `TcpStream`, `SerialPort` (UART), `I2cBus`, `SpiBus`, `GpioPin` (Digital/PWM).
-
-# BIT-C Standard Library Specification (`SPEC.md` — Part 2)
-
-## 3. Уровень 2: Сенсорика и предобработка (`Sensors & Preprocessing`)
-
-Модули этого уровня избавляют разработчика от необходимости тащить тяжелые C++/Python-зависимости (`OpenCV`, `Librosa`) на микрокомпьютеры. Все операции поддерживают работу поверх предварительно выделенных буферов (`ArenaAllocator` / `FixedBufferAllocator`).
-
-### 3.1. `std.vision` — Компьютерное зрение для Edge-устройств
-* **Типы:**
-  * `PixelFormat`: `RGB888`, `BGR888`, `GRAY8`, `YUV420`, `NV12`.
-  * `ImageView`: невладеющая обертка над буфером кадра (`width`, `height`, `stride`, `format`, `data: View<u8>`).
-  * `Rect`: `{ x: u32, y: u32, w: u32, h: u32 }`.
-* **Примитивы:**
-  * `Camera.open(device_id: u8, config: CamConfig) -> Result<Camera, VisionError>` (обертка над V4L2 / libcamera / DCMI).
-  * `convert(src: ImageView, dst: &mut ImageBuffer, target_fmt: PixelFormat) -> Result<(), VisionError>` — аппаратно-ускоряемая конвертация цветов.
-  * `resize(src: ImageView, dst: &mut ImageBuffer, method: InterpMethod) -> Result<(), VisionError>` (`Nearest`, `Bilinear`).
-  * `crop(src: ImageView, roi: Rect) -> Result<ImageView, VisionError>` — **zero-copy** вырезка области интереса за $O(1)$.
-  * `to_tensor(src: ImageView, dst: &mut Tensor<f32>, norm: NormParams) -> Result<(), VisionError>` — нормализация пикселей (`mean`, `std`, `HWC -> CHW`) под вход нейросети.
-
-### 3.2. `std.audio` — Обработка звука и сигналов
-* **Типы:**
-  * `AudioFormat`: `{ sample_rate: u32, channels: u8, bit_depth: u8 }`.
-  * `AudioFrame<T>`: срез сэмплов (`View<i16>` или `View<f32>`).
-  * `WindowType`: `Hann`, `Hamming`, `Blackman`.
-* **Примитивы:**
-  * `Mic.open(device_id: u8, fmt: AudioFormat) -> Result<Mic, AudioError>` (ALSA / I2S).
-  * `apply_window(frame: &mut [f32], win: WindowType)` — наложение оконной функции на месте (in-place).
-  * `fft_real(input: View<f32>, output_mag: &mut [f32]) -> Result<(), AudioError>` — быстрое преобразование Фурье для вещественного сигнала.
-  * `mel_spectrogram(audio: View<f32>, config: MelConfig, out_tensor: &mut Tensor<f32>) -> Result<(), AudioError>` — извлечение признаков для моделей распознавания речи и звуков.
-  * `vad_energy(frame: View<i16>, threshold_db: f32) -> bool` — легковесный детектор голосовой активности (Voice Activity Detection), чтобы не запускать тяжелую модель в тишине.
-
----
-
-## 4. Уровень 3: Локальный инференс и постобработка (`Local Inference`)
-
-### 4.1. `std.infer` — Универсальный движок запуска моделей
-Единый контракт для запуска квантованных и полноразмерных моделей на CPU, NPU или микроконтроллерах без переписывания прикладного кода.
-
-* **Типы:**
-  * `Backend`: `CpuSimd`, `TFLiteMicro`, `OnnxRuntime`, `LlamaCpp`, `NpuDelegate`.
-  * `SessionConfig`: `{ backend: Backend, threads: u8, arena_size_kb: usize }`.
-* **Примитивы:**
-  * `Model.load(bytes: View<u8>, cfg: SessionConfig, alloc: &Allocator) -> Result<Model, InferError>` — загрузка модели из файла или Flash-памяти (XIP).
-  * `Session.run(inputs: View<TensorView>, outputs: &mut [Tensor]) -> Result<(), InferError>` — детерминированный прогон инференса без скрытых аллокаций.
-
-### 4.2. `std.post` — Постобработка и фильтрация событий
-Инструменты, превращающие сырые тензоры нейросети в надежные инженерные события (особенно важно для робототехники и промышленных датчиков).
-
-* **Примитивы:**
-  * `nms(boxes: View<BBox>, scores: View<f32>, iou_thresh: f32, out: &mut Vec<BBox>)` — Non-Maximum Suppression для детекторов объектов.
-  * `argmax(logits: View<f32>) -> (usize, f32)` — индекс и уверенность топового класса.
-  * `Tracker` — легковесный трекер объектов между кадрами (IoU / Kalman-фильтр) с присвоением стабильного `track_id`.
-  * `Debounce<T>` / `Hysteresis` — фильтры дребезга и ложных срабатываний (например, срабатывание тревоги только если объект подтвержден в 4 из 5 последних кадров).
-
----
-
-## 5. Уровень 4: Когнитивный слой и агенты (`Cognitive & Agents`)
-
-Примитивы для работы с LLM/SLM (как локальными, так и облачными), структурирования ответов и безопасного управления внешним миром (API, базы данных или исполнительные механизмы робота).
-
-### 5.1. `std.schema` — Строгая типизация вывода AI
-Аналог Pydantic / Instructor, встроенный в систему типов языка.
-
-* **Примитивы:**
-  * Атрибут `#[derive(Schema)]` для структур BIT-C: автоматически генерирует JSON-Schema / GBNF-грамматику для constrained decoding (гарантирует, что модель физически не сможет выдать невалидный JSON).
-  * `parse_structured<T: Schema>(raw_text: View<u8>, alloc: &Allocator) -> Result<T, SchemaError>` — парсинг и валидация ограничений (`#[range(0, 100)]`, `#[non_empty]`).
-
-### 5.2. `std.context` — Управление памятью и окном контекста
-* **Примитивы:**
-  * `ContextWindow`: кольцевой или приоритетный буфер сообщений с жестким бюджетом токенов (`max_tokens`).
-  * `Role`: `System`, `User`, `Assistant`, `Tool`.
-  * `ContextWindow.push(msg: Message, strategy: EvictionStrategy)` — стратегии вытеснения при нехватке памяти (`DropOldest`, `KeepSystemAndRecent`, `SummarizeCallback`).
-
-### 5.3. `std.tools` — Вызов внешних инструментов и аппаратных актуаторов
-Безопасный мост между решением модели и реальными действиями (HTTP-запрос или поворот сервопривода).
-
-* **Типы:**
-  * `ToolSpec`: описание имени, параметров (`Schema`) и прав доступа (`ReadOnly`, `Actuator`, `Network`).
-  * `ToolRegistry`: статический реестр разрешенных функций.
-* **Примитивы:**
-  * `ToolRegistry.dispatch(call: ToolCall, ctx: &mut ExecContext) -> Result<ToolOutput, ToolError>` — валидация аргументов по схеме перед вызовом реальной функции.
-
-### 5.4. `std.reasoning` — Паттерны рассуждений и самопроверки
-* **Примитивы:**
-  * `verify_loop<T: Schema>(llm: &LlmClient, prompt: View<u8>, validator: fn(&T) -> Result<(), Error>, max_retries: u8) -> Result<T, ReasonError>` — цикл генерации с автоматической передачей текста ошибки валидации обратно модели для самоисправления.
-  * `vote<T: Eq>(candidates: View<T>) -> Option<T>` — консенсус (Self-Consistency) по нескольким прогонам.
-
-### 5.5. `std.flow` — Оркестрация и конечные автоматы (FSM / DAG)
-* **Примитивы:**
-  * `StateMachine<State, Event>` — детерминированный конечный автомат (идеально для роботов и умных устройств: `Idle -> Listening -> Thinking -> Acting -> SafeStop`).
-  * `route(intent: View<u8>, routes: View<Route>) -> RouteId` — семантическая или детерминированная маршрутизация задач между легкой локальной моделью и тяжелой облачной.
-
----
-
-## 6. Сводная дорожная карта реализации (`STATUS_MATRIX`)
-
-| Модуль | Уровень | Приоритет | Статус | Целевой этап |
-| :--- | :--- | :--- | :--- | :--- |
-| `std.test` | 0. Quality | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
-| `std.sys` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
-| `std.encode` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
-| `std.learn` | 3. Inference | **P0 (Critical)** | `[Done]` | Этап 2.0 (Фундамент) |
-| `std.mem` | 1. Core | **P0 (Critical)** | `[Done]` | Этап 2.1 (Фундамент) |
-| `std.tensor` | 1. Core | **P0 (Critical)** | `[In Progress]` | Этап 2.1 (Фундамент) |
-| `std.stream` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.1 (Фундамент) |
-| `std.io` | 1. Core | **P1 (High)** | `[Planned]` | Этап 2.1 (Фундамент) |
-| `std.schema` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.2 (AI Core) |
-| `std.flow` | 4. Cognitive | **P1 (High)** | `[Planned]` | Этап 2.2 (AI Core) |
-| `std.vision` | 2. Sensors | **P2 (Medium)** | `[Planned]` | Этап 3.1 (Edge Vision) |
-| `std.audio` | 2. Sensors | **P2 (Medium)** | `[Planned]` | Этап 3.2 (Edge Audio) |
-| `std.infer` | 3. Inference | **P2 (Medium)** | `[Planned]` | Этап 3.1 (Edge Vision) |
-| `std.post` | 3. Inference | **P2 (Medium)** | `[Planned]` | Этап 3.1 (Edge Vision) |
-| `std.context` | 4. Cognitive | **P2 (Medium)** | `[Planned]` | Этап 3.3 (Hybrid Agent) |
-| `std.tools` | 4. Cognitive | **P2 (Medium)** | `[Planned]` | Этап 3.3 (Hybrid Agent) |
-| `std.reasoning`| 4. Cognitive | **P3 (Normal)** | `[Planned]` | Этап 3.3 (Hybrid Agent) |
+| Module | Tier | Priority | Status | Unit Test Suite |
+| :--- | :--- | :--- | :---: | :--- |
+| `std/test.bc` | 0. Quality | P0 | `[Done]` | `tests/*_test.bc` |
+| `std/sys.bc` | 1. Core | P0 | `[Done]` | `tests/sys_test.bc` |
+| `std/mem.bc` | 1. Core | P0 | `[Done]` | `tests/mem_test.bc` |
+| `std/tensor.bc` | 1. Core | P0 | `[Done]` | `tests/tensor_test.bc` |
+| `std/stream.bc` | 1. Core | P1 | `[Done]` | `tests/stream_test.bc` |
+| `std/io.bc` | 1. Core | P1 | `[Done]` | `tests/io_test.bc` |
+| `std/encode.bc` | 2. Sensors | P0 | `[Done]` | `tests/encode_test.bc` |
+| `std/vision.bc` | 2. Sensors | P2 | `[Done]` | `tests/edge_sensors_test.bc` |
+| `std/audio.bc` | 2. Sensors | P2 | `[Done]` | `tests/edge_sensors_test.bc` |
+| `std/learn.bc` | 3. Inference | P0 | `[Done]` | `tests/learn_test.bc` |
+| `std/post.bc` | 3. Inference | P2 | `[Done]` | `tests/edge_sensors_test.bc` |
+| `std/flow.bc` | 4. Cognitive | P1 | `[Done]` | `tests/flow_test.bc` |
+| `std/schema.bc` | 4. Cognitive | P1 | `[Done]` | `tests/schema_test.bc` |
+| `std/context.bc` | 4. Cognitive | P2 | `[Done]` | `tests/context_test.bc` |
+| `std/tools.bc` | 4. Cognitive | P2 | `[Done]` | `tests/agent_primitives_test.bc` |
+| `std/reasoning.bc`| 4. Cognitive | P3 | `[Done]` | `tests/agent_primitives_test.bc` |

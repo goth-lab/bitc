@@ -1,51 +1,52 @@
-# Руководство по языку BIT-C (`LANGUAGE_GUIDE.md`)
+# BIT-C Language Guide (`LANGUAGE_GUIDE.md`)
 
-## 1. Зачем создан BIT-C? (Философия «AI-Лего»)
+> [Читать на русском](ru/LANGUAGE_GUIDE.md)
 
-Современные AI-фреймворки превратились в тяжёлые «комбайны» с гигабайтами зависимостей, числами с плавающей точкой (`float`) и обязательным GPU. **BIT-C** возвращает инженеру контроль и скорость:
+## 1. Why BIT-C? (The "AI Lego" Philosophy)
 
-* **Никаких `float` и GPU:** Все вычисления строятся на целых числах (`int`, `i32`, `i16`, `i8`, `u8`), фиксированной точке (`Q16.16`) и широких битовых векторах `bvec<N>`.
-* **Двухуровневый конструктор:**
-  * *Нижний уровень* (для авторов библиотек) даёт прямой доступ к статическим аренам памяти, кольцевым буферам и SIMD-интринсикам.
-  * *Верхний уровень* (для прикладных разработчиков и новичков в AI) позволяет собирать умные устройства, детекторы и агентов из готовых «кирпичиков» `std/` за 20–30 строк читаемого кода.
-* **Трансляция в нативный C:** Компилятор генерирует выровненный C-код (`clang -O3`) с аппаратными инструкциями `POPCNT` / NEON / AVX.
+Modern AI stacks have grown into heavy monoliths requiring gigabytes of dependencies, floating-point units (`float`), and expensive GPUs. **BIT-C** restores speed, determinism, and architectural clarity:
+
+* **Zero `float`, Zero GPU:** Every computation uses integer types (`int`, `i32`, `i16`, `i8`, `u8`), `Q16.16` fixed-point math, and wide bit-vectors `bvec<N>`.
+* **Two-Tier Modular Architecture:**
+  * *Systems Tier:* Direct control over static memory arenas, ring buffers, and SIMD alignment for building reusable primitives.
+  * *Application Tier:* Assemble smart cameras, audio triggers, and safe autonomous agents from `std/` building blocks in 20–30 lines of readable code.
+* **Native C Compilation:** Emits 32-byte aligned C99/C11 code compiled via `clang -O3` with hardware `POPCNT` / NEON / AVX instructions.
 
 ---
 
-## 2. Базовые типы и переменные
+## 2. Primitive Types and Static Arrays
 
-В BIT-C тип всегда указывается явно через двоеточие (`имя: Тип = значение;`):
+Variables are explicitly typed using `name: Type = value;`:
 
 ```bitc
-count: int = 42;          // 64-битное знаковое целое (int64_t)
-sample: i16 = -1200;      // 16-битный аудио-сэмпл (int16_t)
-weight: i8 = 127;         // Квантованный вес нейросети (int8_t)
-pixel: u8 = 255;          // Беззнаковый байт / пиксель (uint8_t)
-flag: bit = 1;            // Одиночный бит (0 или 1)
-buf: u8[64];              // Статический массив на стеке (без malloc)
+count: int = 42;          // 64-bit signed integer (int64_t)
+sample: i16 = -1200;      // 16-bit audio PCM sample (int16_t)
+weight: i8 = 127;         // Quantized neural weight (int8_t)
+pixel: u8 = 255;          // Unsigned byte / pixel (uint8_t)
+flag: bit = 1;            // Single bit (0 or 1)
+buf: u8[64];              // Stack-allocated static array (no malloc)
 ```
 
 ---
 
-## 3. Сердце языка: Гипервекторы `bvec<N>` и операции `match` / `count`
+## 3. Hypervectors `bvec<N>`, `match`, and `count`
 
-В классическом AI объекты описываются векторами из сотен `float`-чисел. В **Hyperdimensional Computing (HDC)** объект описывается одним широким битовым вектором `bvec<N>` (от `bvec<8>` до `bvec<2048>` и шире).
+In **Hyperdimensional Computing (HDC)**, concepts and sensor frames are encoded into wide binary vectors `bvec<N>` (from `bvec<4>` to `bvec<2048>+`):
 
-* **Побитовый доступ:** К любому биту вектора можно обратиться как к массиву: `v[0] = 1; b: bit = v[255];`.
-* **`match(a, b)` (Операция XNOR):** Сравнивает два гипервектора побитово. Там, где биты совпали, ставится `1`; где разошлись — `0`.
-* **`count(v)` (Операция POPCNT):** За одну аппаратную инструкцию процессора подсчитывает количество единиц в векторе.
+* **Bit-Level Indexing:** Read or mutate individual bits directly (`v[idx] = 1; b: bit = v[idx];`) for any bit-width `N`.
+* **`match(a, b)` (Bitwise XNOR):** Outputs `1` at every bit position where `a` and `b` agree, and `0` where they differ.
+* **`count(v)` (Hardware POPCNT):** Counts the number of set `1`-bits in a single CPU instruction.
 
-**Пример — измерение семантической близости за 0.3 наносекунды:**
 ```bitc
 sim_bits: int = count(match(sensor_hv, reference_hv));
 if sim_bits > 200 {
-    // Объект совпал более чем на 200 из 256 бит!
+    // Matched more than 200 out of 256 bits!
 }
 ```
 
-## 4. Структуры, методы и шаблоны (Generics)
+## 4. Structs, Receiver Methods, and Generics
 
-BIT-C использует лаконичный синтаксис методов с явным указателем `self` и мономорфизацию шаблонов на этапе компиляции (нулевые накладные расходы в рантайме):
+BIT-C supports Go-style pointer receiver methods and compile-time template monomorphization with zero runtime overhead:
 
 ```bitc
 struct Counter<MaxVal> {
@@ -62,17 +63,16 @@ fn (self: *Counter<MaxVal>) inc() -> int {
 
 ---
 
-## 5. Циклы и параллелизм (`for` и `parallel for`)
+## 5. Bounded Loops and OpenMP Parallelism
 
-Диапазоны в циклах полуоткрытые (`0..10` перебирает `0, 1, ..., 9`):
+Range loops use half-open intervals (`0..10` iterates `0` through `9`):
 
 ```bitc
-// Последовательный цикл с шагом
 for i in 0..64 step 4 {
     acc = acc + buf[i];
 }
 
-// Автоматическое распараллеливание по ядрам CPU через OpenMP
+// Multi-core execution via OpenMP
 parallel for row in 0..256 {
     process_row(row);
 }
@@ -80,21 +80,21 @@ parallel for row in 0..256 {
 
 ---
 
-## 6. Встроенное тестирование (`test` и `bitc test`)
+## 6. Built-In Unit Testing (`test` and `bitc test`)
 
-Любой модуль можно покрыть тестами прямо на языке BIT-C. При обычной сборке (`./bitc app.bc`) тесты не попадают в финальный бинарник.
+Unit tests live natively in `.bc` files and are stripped completely from production builds:
 
 ```bitc
 import "../std/test.bc";
 
-test "проверка битового сходства" {
+test "bitwise similarity sanity check" {
     a: bvec<64> = 0xFF;
     b: bvec<64> = 0xFF;
     assert_eq(count(match(a, b)), 64, 1);
 }
 ```
 
-Запуск всех тестов проекта одной командой:
+Run a single test file or an entire test directory:
 ```bash
 ./bitc test tests/
 ```
