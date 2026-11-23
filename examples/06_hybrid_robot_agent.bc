@@ -1,0 +1,88 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: examples/06_hybrid_robot_agent.bc
+// Description: Safe autonomous robot agent combining token-budgeted ContextWindow,
+//              SchemaValidator, ToolRegistry capability checks, and StateMachine FSM.
+
+import "../std/sys.bc";
+import "../std/context.bc";
+import "../std/schema.bc";
+import "../std/tools.bc";
+import "../std/flow.bc";
+
+// MARK: - Agent Action Contract Validation & Execution
+
+/// @brief Validates an AI-proposed robot command and executes it if authorized.
+fn execute_agent_step(
+    fsm: *StateMachine<4>,
+    tools: *ToolRegistry<4>,
+    tool_id: int,
+    speed_ascii: *u8,
+    speed_len: int
+) -> int {
+    // 1. Parse raw ASCII parameter strictly (rejects malformed LLM output)
+    speed: int = 0;
+    if parse_int_ascii(speed_ascii, speed_len, &speed) == 0 {
+        fsm.force_safe_stop();
+        return -1;
+    }
+
+    // 2. Validate command contract via SchemaValidator (tool_id != 0, speed in [0..100])
+    contract: SchemaValidator;
+    contract.init();
+    contract.check_required(1, tool_id);
+    contract.check_range(2, speed, 0, 100);
+    if contract.is_valid == 0 {
+        fsm.force_safe_stop();
+        return -2;
+    }
+
+    // 3. Enforce capability permissions before touching hardware actuators
+    if tools.authorize(tool_id) == 0 {
+        fsm.force_safe_stop();
+        return -3;
+    }
+
+    // 4. Advance robot FSM: IDLE(0) --event(1)--> MOVING(1)
+    fsm.step(1);
+    return speed;
+}
+
+// MARK: - Main Hybrid Robot Agent Scenario
+
+fn main() {
+    // 1. Initialize robot FSM: 0=IDLE, 1=MOVING, 9=EMERGENCY_STOP
+    robot_fsm: StateMachine<4>;
+    robot_fsm.init(0, 9);
+    robot_fsm.add_rule(0, 1, 1);
+
+    // 2. Configure capability registry (allow ACTUATOR level = 2)
+    tools: ToolRegistry<4>;
+    tools.init(perm_actuator());
+    tools.register_tool(101, perm_actuator());
+
+    // 3. Record system policy and user command in token-budgeted ContextWindow
+    memory: ContextWindow<4>;
+    memory.init(128);
+    memory.push(role_system(), 32, 1, rand_mask256());
+    memory.push(role_user(), 24, 2, rand_mask256());
+
+    // 4. Step A: Valid LLM command -> tool=101, speed="75"
+    ok_cmd: u8[4];
+    i0: int = 0; i1: int = 1; i2: int = 2;
+    ok_cmd[i0] = 55; // '7'
+    ok_cmd[i1] = 53; // '5'
+    res_a: int = execute_agent_step(&robot_fsm, &tools, 101, &ok_cmd[i0], 2);
+    print res_a;
+    print robot_fsm.current_state;
+
+    // 5. Step B: Hallucinated out-of-range speed="250" -> SchemaValidator triggers SAFE_STOP (9)!
+    bad_cmd: u8[4];
+    bad_cmd[i0] = 50; // '2'
+    bad_cmd[i1] = 53; // '5'
+    bad_cmd[i2] = 48; // '0'
+    res_b: int = execute_agent_step(&robot_fsm, &tools, 101, &bad_cmd[i0], 3);
+    print res_b;
+    print robot_fsm.current_state;
+}

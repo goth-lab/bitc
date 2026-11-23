@@ -1,0 +1,87 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: examples/04_edge_vision_guard.bc
+// Description: Edge AI smart camera guard combining zero-copy ROI crop, 256-bit spatial HDC,
+//              hysteresis debounce filtering, and hardware GPIO relay actuation.
+
+import "../std/vision.bc";
+import "../std/post.bc";
+import "../std/io.bc";
+
+// MARK: - Smart Camera Pipeline Helper
+
+/// @brief Encodes a simulated 32x32 camera frame with an optional intruder object in the center.
+fn capture_simulated_frame(buf: *u8, has_intruder: int) {
+    for y in 0..32 {
+        for x in 0..32 {
+            idx: int = y * 32 + x;
+            // Background scene brightness = 40
+            buf[idx] = 40;
+            if has_intruder != 0 {
+                if x >= 10 {
+                    if x < 22 {
+                        if y >= 10 {
+                            if y < 22 {
+                                // Bright object inside ROI = 220
+                                buf[idx] = 220;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Main Edge Vision Guard Loop
+
+fn main() {
+    // 1. Setup hardware alarm relay on GPIO pin 18 (OUTPUT mode)
+    alarm_relay: GpioPin;
+    alarm_relay.init(18, gpio_dir_output());
+
+    // 2. Setup hysteresis debounce filter: require 3 consecutive detections to trigger alarm
+    guard_filter: DebounceFilter;
+    guard_filter.init(3, 2);
+
+    // 3. Allocate static frame buffer (32x32 grayscale) and capture baseline empty scene
+    frame_buf: u8[1024];
+    cam: GrayImageView;
+    cam.data = &frame_buf;
+    cam.width = 32;
+    cam.height = 32;
+    cam.stride = 32;
+
+    capture_simulated_frame(&frame_buf, 0);
+    // Zero-copy crop of central 16x16 doorway zone
+    door_roi: GrayImageView = cam.crop(8, 8, 16, 16);
+    baseline_hv: bvec<256> = encode_grid_16x16_bvec256(door_roi, 128);
+
+    // 4. Process 5 incoming camera frames: [empty, intruder, intruder, intruder, empty]
+    events: int[5];
+    i0: int = 0; i1: int = 1; i2: int = 2; i3: int = 3; i4: int = 4;
+    events[i0] = 0;
+    events[i1] = 1;
+    events[i2] = 1;
+    events[i3] = 1;
+    events[i4] = 0;
+
+    for step_idx in 0..5 {
+        capture_simulated_frame(&frame_buf[0], events[step_idx]);
+        current_hv: bvec<256> = encode_grid_16x16_bvec256(door_roi, 128);
+
+        // Hamming similarity against empty baseline (< 220 bits matching means scene changed)
+        similarity: int = count(match(baseline_hv, current_hv));
+        raw_anomaly: int = 0;
+        if similarity < 220 {
+            raw_anomaly = 1;
+        }
+
+        confirmed: int = guard_filter.update(raw_anomaly);
+        alarm_relay.write(confirmed);
+
+        // Print relay state after each frame (0, 0, 0, 1, 1)
+        print alarm_relay.read();
+    }
+}

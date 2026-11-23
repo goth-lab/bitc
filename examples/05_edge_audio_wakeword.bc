@@ -1,0 +1,91 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: examples/05_edge_audio_wakeword.bc
+// Description: FPU-free audio wake-word pipeline using RingBuffer, VAD, 64-bit temporal
+//              profile encoding, and multi-frame majority consensus voting.
+
+import "../std/mem.bc";
+import "../std/audio.bc";
+import "../std/reasoning.bc";
+
+// MARK: - Simulated Microphone Frame Generator
+
+/// @brief Fills a 64-sample PCM buffer with either silence or a two-syllable wake-word envelope.
+fn synthesize_mic_frame(pcm: *i16, is_wakeword: int) {
+    for i in 0..64 {
+        if is_wakeword == 0 {
+            pcm[i] = 15;
+        } else {
+            // Two energy bursts ("HI" + "BIT") separated by a short pause
+            if i < 20 {
+                pcm[i] = 2400;
+            } else {
+                if i < 36 {
+                    pcm[i] = 120;
+                } else {
+                    pcm[i] = 2600;
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Main Wake-Word Pipeline
+
+fn main() {
+    // 1. Capture reference wake-word 64-bit acoustic profile
+    ref_pcm: i16[64];
+    synthesize_mic_frame(&ref_pcm, 1);
+    ref_frame: AudioFrame16;
+    ref_frame.samples = &ref_pcm[0];
+    ref_frame.len = 64;
+    ref_frame.sample_rate = 16000;
+    wakeword_sig: bvec<64> = encode_audio_64(ref_frame);
+
+    // 2. Stream 3 consecutive microphone windows through a RingBuffer<i16, 64>
+    mic_ring: RingBuffer<i16, 64>;
+    votes: int[3];
+    v0: int = 0; v1: int = 1; v2: int = 2;
+    votes[v0] = 0; votes[v1] = 0; votes[v2] = 0;
+
+    // Simulate 3 windows: [wakeword, silence, wakeword]
+    inputs: int[3];
+    inputs[v0] = 1; inputs[v1] = 0; inputs[v2] = 1;
+
+    for w in 0..3 {
+        raw_pcm: i16[64];
+        synthesize_mic_frame(&raw_pcm[0], inputs[w]);
+        for s in 0..64 {
+            mic_ring.push_overwrite(raw_pcm[s]);
+        }
+
+        // Drain ring buffer into processing frame
+        proc_pcm: i16[64];
+        for s in 0..64 {
+            sample: i16 = 0;
+            mic_ring.pop(&sample);
+            proc_pcm[s] = sample;
+        }
+
+        frame: AudioFrame16;
+        frame.samples = &proc_pcm[0];
+        frame.len = 64;
+        frame.sample_rate = 16000;
+
+        // Gate heavy matching behind low-cost VAD
+        if audio_vad(frame, 400) != 0 {
+            sig: bvec<64> = encode_audio_64(frame);
+            score: int = count(match(sig, wakeword_sig));
+            if score >= 56 {
+                votes[w] = 1;
+            }
+        }
+    }
+
+    // 3. Self-Consistency majority vote across the 3 windows -> decision = 1 (Wake-Word Confirmed!)
+    final_decision: int = 0;
+    confirmations: int = vote_majority_int(&votes[v0], 3, &final_decision);
+    print final_decision;
+    print confirmations;
+}
