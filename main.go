@@ -1,3 +1,9 @@
+// Copyright (c) 2026 Vladimir Borisenko (Goth) & AI Gemini.
+// Licensed under the MIT License. See LICENSE file in the project root.
+//
+// File: main.go
+// Description: BIT-C compiler CLI driver supporting single-file execution and batch test suites.
+
 package main
 
 import (
@@ -6,31 +12,76 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
 // MARK: - Compiler Driver Entry Point
 
-// main parses CLI arguments, runs the BIT-C frontend/backend pipeline, invokes Clang
-// to emit a native binary, and executes the compiled program or unit test suite.
+// main parses CLI arguments and dispatches either a single program build/run
+// or a single-file / directory-wide unit test run.
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: bitc <source_file.bc> | bitc test <source_file.bc>")
+		fmt.Println("Usage: bitc <source_file.bc> | bitc test <file.bc | dir/>")
 		return
 	}
 
-	isTestMode := false
-	inputFile := os.Args[1]
 	if os.Args[1] == "test" {
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: bitc test <source_file.bc>")
+			fmt.Println("Usage: bitc test <file.bc | dir/>")
 			return
 		}
-		isTestMode = true
-		inputFile = os.Args[2]
+		runTestTarget(os.Args[2])
+		return
 	}
 
-	// 1. Load root module and recursively resolve all 'import' dependencies.
+	processFile(os.Args[1], false)
+}
+
+// runTestTarget executes either a single .bc test file or all '*_test.bc' files inside a directory.
+func runTestTarget(target string) {
+	info, err := os.Stat(target)
+	if err != nil {
+		fmt.Printf("[BIT-C] Test target error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !info.IsDir() {
+		processFile(target, true)
+		return
+	}
+
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		fmt.Printf("[BIT-C] Failed to read test directory '%s': %v\n", target, err)
+		os.Exit(1)
+	}
+
+	var testFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), "_test.bc") {
+			testFiles = append(testFiles, filepath.Join(target, entry.Name()))
+		}
+	}
+	sort.Strings(testFiles)
+
+	if len(testFiles) == 0 {
+		fmt.Printf("[BIT-C] No '*_test.bc' files found in '%s'\n", target)
+		return
+	}
+
+	fmt.Printf("[BIT-C SUITE] Running %d test suite(s) in '%s'...\n\n", len(testFiles), target)
+	for _, tf := range testFiles {
+		processFile(tf, true)
+		fmt.Println()
+	}
+	fmt.Printf("[BIT-C SUITE] All %d test suite(s) passed!\n", len(testFiles))
+}
+
+// MARK: - Compilation Pipeline and Test Harness Generation
+
+// processFile runs loading, semantic monomorphization, C code emission, and Clang execution.
+func processFile(inputFile string, isTestMode bool) {
 	prog, err := LoadProgramWithImports(inputFile)
 	if err != nil {
 		fmt.Printf("[BIT-C] Load Error: %v\n", err)
@@ -39,7 +90,6 @@ func main() {
 	fmt.Printf("[BIT-C] Loaded '%s' (%d structs, %d functions)\n",
 		inputFile, len(prog.Structs), len(prog.Funcs))
 
-	// 2. Run semantic validation and template monomorphization.
 	ctx, err := AnalyzeProgram(prog, isTestMode)
 	if err != nil {
 		fmt.Printf("[BIT-C] Semantic Error: %v\n", err)
@@ -48,7 +98,6 @@ func main() {
 	fmt.Printf("[BIT-C] Monomorphization & type check passed (%d specialized structs, %d functions)\n",
 		len(ctx.MonoStructs), len(ctx.MonoFuncs))
 
-	// 3. Emit C99/C11 source code (appending a test harness main() when in test mode).
 	cCode := GenerateCCode(ctx)
 	if isTestMode {
 		cCode += buildTestHarnessMain(ctx.TestFuncs)
@@ -56,8 +105,6 @@ func main() {
 
 	compileAndRun(inputFile, cCode, isTestMode)
 }
-
-// MARK: - Native Compilation, Execution, and Test Harness Generation
 
 // compileAndRun writes generated C code to build/, compiles it with Clang using
 // native CPU SIMD flags, and executes the resulting binary.
