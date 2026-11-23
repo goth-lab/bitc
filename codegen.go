@@ -88,6 +88,21 @@ static inline void bitc_assert(int64_t cond, int64_t line) {
 		exit(1);
 	}
 }
+static inline void print_bench(int64_t id, int64_t iters, int64_t elapsed_ns) {
+	if (iters <= 0) return;
+	if (elapsed_ns <= 0) elapsed_ns = 1;
+	int64_t total_ms = elapsed_ns / 1000000LL;
+	int64_t ps_per_op = (elapsed_ns * 1000LL) / iters;
+	int64_t ns_whole = ps_per_op / 1000LL;
+	int64_t ns_frac = (ps_per_op % 1000LL) / 10LL;
+	int64_t kops_per_sec = (iters * 1000000LL) / elapsed_ns;
+	int64_t mops_whole = kops_per_sec / 1000LL;
+	int64_t mops_frac = (kops_per_sec % 1000LL) / 10LL;
+	printf("[BENCH #%lld] %lld iters | Total: %lld ms | Latency: %lld.%02lld ns/op | Throughput: %lld.%02lld M ops/sec\n",
+		(long long)id, (long long)iters, (long long)total_ms,
+		(long long)ns_whole, (long long)ns_frac,
+		(long long)mops_whole, (long long)mops_frac);
+}
 `)
 	// Emit deterministic sorted typedefs for all wide bvec<N> widths.
 	var widths []int

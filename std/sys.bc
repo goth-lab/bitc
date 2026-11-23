@@ -20,6 +20,12 @@ extern fn save_raw(slot: int, ptr: *void, bytes: int);
 /// @param bytes Number of bytes to read.
 extern fn load_raw(slot: int, ptr: *void, bytes: int);
 
+/// @brief Prints a formatted integer-only nanosecond latency and throughput benchmark report.
+/// @param id Numeric benchmark stage identifier.
+/// @param iterations Total number of executed loop iterations.
+/// @param elapsed_ns Total elapsed monotonic time in nanoseconds.
+extern fn print_bench(id: int, iterations: int, elapsed_ns: int);
+
 // MARK: - Wide Hypervector Random Generators
 
 /// @brief Generates a sparse 256-bit random mask by populating each bit lane.
